@@ -62,16 +62,23 @@ class VLLMClient:
         self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
     def chat(self, system_prompt: str, user_prompt: str) -> str:
+        request = {
+            "model": self.config.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": self.config.temperature,
+            "max_tokens": self.config.max_tokens,
+        }
+
         try:
             response = self._client.chat.completions.create(
-                model=self.config.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
+                **request,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
+        except TypeError:
+            response = self._client.chat.completions.create(**request)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to call vLLM endpoint {self.config.base_url}. "
