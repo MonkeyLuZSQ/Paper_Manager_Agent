@@ -325,7 +325,18 @@ ALL_PROXY
 maximum context length is 2048 tokens
 ```
 
-降低输出和输入预算：
+这通常不是 vLLM 服务不可用，而是某一次 prompt + output token 总和超过了 `--max-model-len 2048`。交互式问答阶段也可能触发，因为 prompt 中会包含当前问题、最近对话、当前论文总结片段和检索到的英文 evidence。
+
+当前代码已经做了这些控制：
+
+- ReAct 工具决策输出限制为 `96` tokens。
+- 当前论文 summary 片段限制为约 `260` tokens。
+- 最近对话和 conversation summary 单独截断。
+- 检索 observation 限制为约 `650` tokens。
+- 强制最终回答阶段的检索结果限制为约 `900` tokens。
+- 中文 token 估算按单字计数，避免中文被低估后挤爆上下文。
+
+如果仍然看到超限，可以继续降低输出和输入预算：
 
 ```bash
 AGENT_MAX_TOKENS=400 ./run_agent_wsl.sh
@@ -372,6 +383,19 @@ VLLM_MODEL_PATH=Qwen/Qwen3-0.6B VLLM_MODEL=qwen3-0.6b ./run_agent_wsl.sh
 - `agent.md`：补充三种总结模式说明，保留专业审稿人式输出规范。
 - `README.md`：更新使用说明和本优化记录。
 
+后续进一步优化：
+
+- 最终 Markdown 不再由 LLM 一次性生成。
+- 程序会先基于审稿笔记生成结构化 `paper_card`。
+- 然后分别调用 LLM 生成 `摘要`、`主要内容`、`核心算法`、`算例分析` 四节。
+- 最终 Markdown 由 Python 拼接：
+
+```text
+final_report = "# 摘要" + section_1 + "# 主要内容" + section_2 + "# 核心算法" + section_3 + "# 算例分析" + section_4
+```
+
+这样每次 LLM 调用的上下文更短，同时每一节可以有更充足的输出空间。
+
 三种模式区别：
 
 ```text
@@ -395,7 +419,7 @@ data/review_cache/<论文名>/<summary_mode>_notes.json
 - quick 不做多轮压缩，standard 只做一轮压缩，deep 才做多轮压缩。
 - 分块笔记输出预算降到约 `240` tokens。
 - 压缩笔记输出预算降到约 `220` tokens。
-- 最终报告输出预算默认限制为 `500` tokens。
+- 最终报告改为分章节生成，每节单独调用 LLM，避免一次性 summary prompt 超过 2048。
 - 最终 prompt 不再整段塞入 `agent.md`，只保留必要总结规则。
 
 查看每次总结的 LLM 调用次数：
@@ -433,3 +457,63 @@ User> 请对 Zhen 这篇论文做深度阅读和完整 review
 ```
 
 触发 deep。
+
+## 中英文检索优化
+
+当前项目的论文 chunk 保留英文原文，不做全文翻译。用户可以用中文提问，agent 会在内部自动生成英文检索 query，并执行 hybrid retrieval。
+
+新增文件：
+
+- `paper_agent/query_rewriter.py`：检测 query 语言，并生成 bilingual rewritten query。
+- `academic_terms_zh_en.json`：常见学术术语中英映射表。
+- `config.json`：检索和 embedding 配置。
+
+`query_rewriter.py` 会把中文问题改写为：
+
+```json
+{
+  "original_query": "这篇论文求的是什么方程？",
+  "english_query": "What governing equations or mathematical model are used in this paper?",
+  "academic_query": "...",
+  "keyword_queries": ["governing equations", "mathematical model", "Navier-Stokes equations"],
+  "section_hints": ["Abstract", "Introduction", "Method", "Formulation"],
+  "concept_aliases": ["equation", "governing equation", "mathematical model"]
+}
+```
+
+检索时会合并多路 query：
+
+```text
+original_query
+english_query
+academic_query
+keyword_queries
+section_hints 加权
+```
+
+然后按 `chunk_id` 去重、加权重排，返回英文原文 evidence chunk。
+
+当前 embedding 状态：
+
+```json
+{
+  "embedding_model": null,
+  "embedding_multilingual": false,
+  "enable_query_translation": true,
+  "enable_keyword_expansion": true,
+  "retrieval_backend": "keyword_hybrid"
+}
+```
+
+也就是说，当前项目还没有真正接入 embedding 模型，检索后端是 keyword hybrid。中文问题检索英文文献时，必须启用 query translation + English keyword expansion。后续如果接入 embedding，建议使用 multilingual embedding 模型，并把 `embedding_multilingual` 设置为 `true`。
+
+回答策略：
+
+- 最终回答使用中文。
+- 关键事实必须引用英文原文来源：
+
+```text
+[paper_id=..., page=..., section=..., chunk_id=...]
+```
+
+- 可以附少量英文原文 evidence，但不要把英文原文全文翻译后当作证据。

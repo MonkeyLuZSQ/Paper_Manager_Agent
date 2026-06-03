@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from paper_agent.paper_store import PaperChunk, build_index, list_supported_papers, load_or_build_index
-from paper_agent.retriever import RetrievedChunk, format_retrieved_chunks, search_chunks
+from paper_agent.retriever import RetrievedChunk, format_retrieved_chunks, hybrid_search_chunks
 from paper_agent.reviewer import resolve_paper_path
 
 
@@ -37,9 +37,9 @@ class ToolBox:
 
     def search_papers(self, query: str, top_k: int = 5, paper_name: str | None = None) -> str:
         chunks = self.chunks_for_paper(paper_name) if paper_name else self.chunks
-        results = search_chunks(chunks, query=query, top_k=top_k)
-        if not results and _is_overview_query(query):
-            priority = {"Abstract": 0, "Introduction": 1, "Conclusion": 2}
+        results = hybrid_search_chunks(chunks, query=query, top_k=top_k)
+        if not results and _needs_fallback(query):
+            priority = _fallback_priority(query)
             selected = sorted(
                 chunks,
                 key=lambda chunk: (priority.get(chunk.section, 9), chunk.chunk_id),
@@ -84,3 +84,42 @@ def _is_overview_query(query: str) -> bool:
         "摘要",
     ]
     return any(keyword in lowered for keyword in keywords)
+
+
+def _needs_fallback(query: str) -> bool:
+    lowered = query.lower()
+    keywords = [
+        "summary",
+        "summarize",
+        "overview",
+        "method",
+        "algorithm",
+        "parallel",
+        "result",
+        "总结",
+        "概括",
+        "主要",
+        "研究什么",
+        "讲什么",
+        "摘要",
+        "核心算法",
+        "算法",
+        "方法",
+        "时空并行",
+        "并行",
+        "算例",
+        "实验",
+        "结果",
+    ]
+    return any(keyword in lowered for keyword in keywords)
+
+
+def _fallback_priority(query: str) -> dict[str, int]:
+    lowered = query.lower()
+    if any(keyword in lowered for keyword in ["核心算法", "算法", "方法", "实现", "推导"]):
+        return {"Method": 0, "Algorithm": 0, "Formulation": 0, "Introduction": 1, "Results": 2}
+    if any(keyword in lowered for keyword in ["时空并行", "并行", "space-time", "parallel"]):
+        return {"Method": 0, "Algorithm": 0, "Formulation": 0, "Introduction": 1, "Results": 2}
+    if any(keyword in lowered for keyword in ["算例", "实验", "结果", "验证"]):
+        return {"Numerical examples": 0, "Experiments": 0, "Results": 0, "Method": 1, "Conclusion": 2}
+    return {"Abstract": 0, "Introduction": 1, "Conclusion": 2, "Method": 3, "Results": 4}

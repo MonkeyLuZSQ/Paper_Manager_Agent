@@ -72,6 +72,75 @@ def final_review_prompt(paper_name: str, notes: list[str]) -> str:
 """
 
 
+def paper_card_prompt(paper_name: str, notes: list[str]) -> str:
+    joined_notes = "\n\n".join(
+        f"===== 审稿笔记 {index} =====\n{note}"
+        for index, note in enumerate(notes, start=1)
+    )
+    return f"""请基于以下审稿笔记，为论文《{paper_name}》生成结构化 paper_card。
+
+要求：
+- 使用中文。
+- 只依据笔记，不要编造。
+- 尽量结构化、信息密度高。
+- 如果信息不足，写“论文片段中未说明”。
+
+请按以下字段输出：
+title_en:
+title_zh:
+keywords_en:
+keywords_zh:
+summary_zh:
+terminology_map:
+研究问题：
+研究对象：
+核心方法：
+核心算法/公式：
+实验或算例：
+主要结论：
+创新点：
+局限或疑问：
+
+审稿笔记：
+```text
+{joined_notes}
+```
+"""
+
+
+def section_review_prompt(paper_name: str, section_title: str, paper_card: str, notes: list[str]) -> str:
+    joined_notes = "\n\n".join(
+        f"===== 审稿笔记 {index} =====\n{note}"
+        for index, note in enumerate(notes, start=1)
+    )
+    section_guidance = {
+        "摘要": "概括论文研究问题、方法、结论和价值。用 1-3 段，信息要完整。",
+        "主要内容": "说明研究背景、问题定义、整体思路、主要贡献和章节逻辑。",
+        "核心算法": "说明核心模型、算法流程、关键公式、输入输出和技术动机；如果不是算法型论文，总结核心方法论。",
+        "算例分析": "说明实验/算例设置、评价指标、对比方法、主要结果，以及结果如何支撑结论。",
+    }
+    return f"""请为论文《{paper_name}》撰写 Markdown 总结中的“{section_title}”一节。
+
+写作要求：
+- 只输出本节正文，不要输出一级标题。
+- 使用中文。
+- 以专业审稿人的视角写作。
+- 依据 paper_card 和审稿笔记，不要编造。
+- 如果证据不足，明确写“论文片段中未说明”。
+- {section_guidance[section_title]}
+
+paper_card：
+```text
+{paper_card}
+```
+
+审稿笔记：
+```text
+{joined_notes}
+```
+"""
+
+
 def compact_notes_prompt(batch_index: int, total_batches: int, notes: list[str]) -> str:
     joined_notes = "\n\n".join(
         f"===== 笔记 {index} =====\n{note}"

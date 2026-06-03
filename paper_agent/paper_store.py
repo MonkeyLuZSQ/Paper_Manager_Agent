@@ -44,14 +44,18 @@ def build_index(
         text = normalize_text(raw_text)
         paper_id = _safe_id(paper_path.stem)
         paper_chunks = chunk_text(text, max_chars=chunk_chars, overlap=overlap)
+        current_page: int | None = None
         for index, chunk in enumerate(paper_chunks, start=1):
+            inferred_page = _infer_page(chunk)
+            if inferred_page is not None:
+                current_page = inferred_page
             chunks.append(
                 PaperChunk(
                     chunk_id=f"{paper_id}_{index:04d}",
                     paper_id=paper_id,
                     paper_name=paper_path.name,
                     section=_infer_section(chunk),
-                    page=_infer_page(chunk),
+                    page=inferred_page or current_page,
                     text=chunk,
                 )
             )

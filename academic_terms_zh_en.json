@@ -1,0 +1,79 @@
+{
+  "方程": [
+    "equation",
+    "governing equation",
+    "mathematical model",
+    "formulation"
+  ],
+  "方法": [
+    "method",
+    "algorithm",
+    "scheme",
+    "approach",
+    "framework"
+  ],
+  "算例": [
+    "numerical experiment",
+    "benchmark",
+    "case study",
+    "test problem"
+  ],
+  "结果": [
+    "result",
+    "performance",
+    "accuracy",
+    "speedup",
+    "scalability"
+  ],
+  "降阶": [
+    "reduced-order model",
+    "ROM",
+    "POD",
+    "model reduction"
+  ],
+  "组装时间": [
+    "assembly time",
+    "assembly cost",
+    "assembling cost",
+    "finite element assembly"
+  ],
+  "并行": [
+    "parallel computing",
+    "scalability",
+    "speedup",
+    "MPI",
+    "time parallel",
+    "space-time parallel"
+  ],
+  "图": [
+    "figure",
+    "plot",
+    "numerical result",
+    "visualization"
+  ],
+  "局限性": [
+    "limitation",
+    "drawback",
+    "future work"
+  ],
+  "核心算法": [
+    "core algorithm",
+    "algorithm",
+    "method",
+    "formulation",
+    "scheme"
+  ],
+  "时空并行": [
+    "space-time parallel",
+    "space and time communicators",
+    "temporal parallelism",
+    "spatial parallelism",
+    "parallel-in-time"
+  ],
+  "纳维斯托克斯": [
+    "Navier-Stokes equations",
+    "incompressible flow",
+    "computational fluid dynamics",
+    "CFD"
+  ]
+}

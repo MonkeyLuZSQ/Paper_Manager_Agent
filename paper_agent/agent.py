@@ -21,7 +21,7 @@ def load_agent_instructions(path: Path = Path("agent.md")) -> str:
 AGENT_SYSTEM_PROMPT = """你是一个本地文献管理和论文阅读 agent。
 你只能基于工具返回的文献片段和对话上下文回答，不要编造文献中没有的信息。
 如果检索片段不足，请明确说“当前检索片段不足”。
-回答时尽量引用片段编号，例如 [1]、[2]。
+最终回答使用中文，但关键事实必须引用英文原文证据来源，例如 [paper_id=..., page=..., section=..., chunk_id=...]。
 
 你可以选择的动作只有：
 1. search_papers: 根据 query 检索文献 chunk。
@@ -74,12 +74,15 @@ class PaperAgent:
             return summary_answer
 
         observations: list[str] = []
+        summary_context = self._active_summary_context()
+        if summary_context:
+            observations.append(f"Current paper summary markdown:\n{summary_context}")
         forced_context = self.tools.search_papers(user_input, top_k=2, paper_name=self.active_paper_name)
         observations.append(f"Initial retrieval:\n{forced_context}")
 
         for step in range(1, self.max_tool_calls + 1):
             prompt = self._build_react_prompt(user_input, observations, step)
-            raw = self.llm.chat(AGENT_SYSTEM_PROMPT, prompt, max_tokens=160)
+            raw = self.llm.chat(AGENT_SYSTEM_PROMPT, prompt, max_tokens=96)
             action = self._parse_action(raw)
 
             if action["action"] == "search_papers":
@@ -115,30 +118,27 @@ class PaperAgent:
     def _build_react_prompt(self, user_input: str, observations: list[str], step: int) -> str:
         return f"""请根据当前问题和已有 observation 选择下一步动作。
 
-【项目级 agent.md 规范】
-{self.review_instructions or "暂无"}
-
 输出格式只能是 JSON：
-{{"action": "search_papers", "args": {{"query": "...", "top_k": 5}}}}
+{{"action": "search_papers", "args": {{"query": "...", "top_k": 2}}}}
 或
 {{"action": "read_chunks", "args": {{"chunk_ids": ["..."]}}}}
 或
 {{"action": "final_answer", "answer": "..."}}
 
 【对话摘要】
-{self.conversation_summary or "暂无"}
+{self._trim_text(self.conversation_summary or "暂无", 120)}
 
 【当前选中文献】
 {self.active_paper_name or "暂无。用户尚未指定文献时，不要假定只讨论某一篇。"}
 
 【最近对话】
-{self._recent_messages_text()}
+{self._trim_text(self._recent_messages_text(), 180)}
 
 【当前问题】
 {user_input}
 
 【Observation】
-{self._trim_text(chr(10).join(observations), self.max_input_tokens)}
+{self._trim_text(chr(10).join(observations), 650)}
 
 这是第 {step}/{self.max_tool_calls} 次工具决策。若信息足够，请使用 final_answer。
 """
@@ -146,30 +146,41 @@ class PaperAgent:
     def _force_final_answer(self, user_input: str, observations: list[str]) -> str:
         prompt = f"""请基于已有文献片段直接回答用户问题。
 
-【项目级 agent.md 规范】
-{self.review_instructions or "暂无"}
-
 【对话摘要】
-{self.conversation_summary or "暂无"}
+{self._trim_text(self.conversation_summary or "暂无", 120)}
 
 【当前选中文献】
 {self.active_paper_name or "暂无"}
 
 【最近对话】
-{self._recent_messages_text()}
+{self._trim_text(self._recent_messages_text(), 180)}
 
 【当前问题】
 {user_input}
 
 【检索与工具结果】
-{self._trim_text(chr(10).join(observations), self.max_input_tokens)}
+{self._trim_text(chr(10).join(observations), 900)}
 
 要求：
 - 使用中文。
-- 尽量引用片段编号。
+- 关键事实必须引用英文原文证据来源，格式如 [paper_id=..., page=..., section=..., chunk_id=...]。
+- 如有必要，可以附一小段英文原文 evidence，但不要大段翻译英文原文。
 - 如果证据不足，请明确说明“当前检索片段不足”。
 """
-        return self.llm.chat(AGENT_SYSTEM_PROMPT, prompt, max_tokens=self.llm.config.max_tokens)
+        raw = self.llm.chat(AGENT_SYSTEM_PROMPT, prompt, max_tokens=min(self.llm.config.max_tokens, 420))
+        action = self._parse_action(raw)
+        if action["action"] == "final_answer" and action.get("answer"):
+            return str(action["answer"]).strip()
+        return raw
+
+    def _active_summary_context(self) -> str:
+        if not self.active_paper_name:
+            return ""
+        summary_path = self.output_dir / f"{Path(self.active_paper_name).stem}总结.md"
+        if not summary_path.exists():
+            return ""
+        text = summary_path.read_text(encoding="utf-8", errors="ignore")
+        return self._trim_text(text, 260)
 
     def _handle_summary_request(self, user_input: str) -> str | None:
         if not _is_summary_request(user_input):
@@ -262,9 +273,9 @@ class PaperAgent:
 {self.conversation_summary or "暂无"}
 
 【旧对话】
-{self._trim_text(old_text, 900)}
+{self._trim_text(old_text, 500)}
 """
-        return self.llm.chat(AGENT_SYSTEM_PROMPT, prompt, max_tokens=220)
+        return self.llm.chat(AGENT_SYSTEM_PROMPT, prompt, max_tokens=160)
 
     def _recent_messages_text(self) -> str:
         if not self.messages:
@@ -272,10 +283,11 @@ class PaperAgent:
         return "\n".join(f"{item.role}: {item.content}" for item in self.messages[-self.recent_turns * 2 :])
 
     def _trim_text(self, text: str, max_tokens: int) -> str:
-        if count_tokens(text) <= max_tokens:
+        matches = list(re.finditer(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\w\s]", text, flags=re.UNICODE))
+        if len(matches) <= max_tokens:
             return text
-        chars = max(800, max_tokens * 3)
-        return text[:chars] + "\n...[已截断]"
+        end = matches[max(1, max_tokens) - 1].end()
+        return text[:end] + "\n...[已截断]"
 
     def _parse_action(self, raw: str) -> dict[str, Any]:
         raw = raw.strip()
@@ -285,6 +297,10 @@ class PaperAgent:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
+            if "final_answer" in raw and '"answer"' in raw:
+                answer = _extract_json_like_answer(raw)
+                if answer:
+                    return {"action": "final_answer", "answer": answer}
             return {"action": "final_answer", "answer": raw}
 
         if not isinstance(data, dict):
@@ -292,6 +308,18 @@ class PaperAgent:
         if data.get("action") not in {"search_papers", "read_chunks", "final_answer"}:
             return {"action": "final_answer", "answer": raw}
         return data
+
+
+def _extract_json_like_answer(raw: str) -> str:
+    match = re.search(r'"answer"\s*:\s*"(.*)"\s*}?\s*$', raw, flags=re.DOTALL)
+    if not match:
+        return ""
+    answer = match.group(1).strip()
+    if answer.endswith('"}'):
+        answer = answer[:-2]
+    elif answer.endswith('"'):
+        answer = answer[:-1]
+    return answer.replace("\\n", "\n").replace('\\"', '"').strip()
 
 
 def _is_summary_request(text: str) -> bool:

@@ -10,7 +10,8 @@ from paper_agent.prompts import (
     REVIEWER_SYSTEM_PROMPT,
     chunk_review_prompt,
     compact_notes_prompt,
-    final_review_prompt,
+    paper_card_prompt,
+    section_review_prompt,
 )
 from paper_agent.text_utils import chunk_text, normalize_text
 
@@ -44,7 +45,7 @@ SUMMARY_MODE_CONFIGS = {
         batch_size=3,
         note_tokens=220,
         compact_tokens=0,
-        final_tokens=500,
+        final_tokens=550,
         compression_rounds=0,
         max_chunk_chars=1100,
     ),
@@ -53,7 +54,7 @@ SUMMARY_MODE_CONFIGS = {
         batch_size=2,
         note_tokens=220,
         compact_tokens=220,
-        final_tokens=500,
+        final_tokens=650,
         compression_rounds=1,
         max_chunk_chars=1100,
     ),
@@ -62,7 +63,7 @@ SUMMARY_MODE_CONFIGS = {
         batch_size=1,
         note_tokens=240,
         compact_tokens=220,
-        final_tokens=500,
+        final_tokens=750,
         compression_rounds=99,
         max_chunk_chars=2500,
     ),
@@ -177,13 +178,25 @@ def review_paper(
             max_tokens=config.compact_tokens,
         )
         llm_calls += compact_calls
-    print("Writing final review report...")
-    report = llm.chat(
+    print("Building paper card...")
+    paper_card = llm.chat(
         REVIEWER_SYSTEM_PROMPT,
-        final_review_prompt(paper_path.stem, notes),
-        max_tokens=min(llm.config.max_tokens, config.final_tokens),
+        paper_card_prompt(paper_path.stem, notes),
+        max_tokens=min(llm.config.max_tokens, 420),
     )
     llm_calls += 1
+
+    print("Writing final review report by sections...")
+    section_outputs: dict[str, str] = {}
+    for section_title in ["摘要", "主要内容", "核心算法", "算例分析"]:
+        print(f"Writing section: {section_title}")
+        section_outputs[section_title] = llm.chat(
+            REVIEWER_SYSTEM_PROMPT,
+            section_review_prompt(paper_path.stem, section_title, paper_card, notes),
+            max_tokens=min(llm.config.max_tokens, config.final_tokens),
+        )
+        llm_calls += 1
+    report = assemble_markdown_report(section_outputs)
     return ReviewResult(
         paper_path=paper_path,
         chunks=len(selected_chunks),
@@ -198,6 +211,22 @@ def write_report(result: ReviewResult, output_dir: Path) -> Path:
     output_path = output_dir / f"{result.paper_path.stem}总结.md"
     output_path.write_text(result.report, encoding="utf-8")
     return output_path
+
+
+def assemble_markdown_report(section_outputs: dict[str, str]) -> str:
+    sections = ["摘要", "主要内容", "核心算法", "算例分析"]
+    parts: list[str] = []
+    for section in sections:
+        body = strip_section_heading(section_outputs.get(section, ""), section).strip()
+        parts.append(f"# {section}\n\n{body}")
+    return "\n\n".join(parts).strip() + "\n"
+
+
+def strip_section_heading(text: str, section: str) -> str:
+    lines = text.strip().splitlines()
+    if lines and lines[0].strip().lstrip("#").strip() == section:
+        return "\n".join(lines[1:]).strip()
+    return text.strip()
 
 
 def select_review_chunks(chunks: list[str], max_review_chunks: int, max_chunk_chars: int) -> list[str]:

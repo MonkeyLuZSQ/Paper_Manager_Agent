@@ -1,0 +1,7 @@
+{
+  "embedding_model": null,
+  "embedding_multilingual": false,
+  "enable_query_translation": true,
+  "enable_keyword_expansion": true,
+  "retrieval_backend": "keyword_hybrid"
+}
