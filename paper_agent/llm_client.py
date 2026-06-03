@@ -52,6 +52,7 @@ class VLLMClient:
     def __init__(self, config: LLMConfig):
         try:
             from openai import OpenAI
+            import httpx
         except ModuleNotFoundError as exc:
             raise ModuleNotFoundError(
                 "openai is required to call the vLLM OpenAI-compatible API. "
@@ -59,9 +60,15 @@ class VLLMClient:
             ) from exc
 
         self.config = config
-        self._client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+        http_client = httpx.Client(timeout=600, trust_env=False)
+        self._client = OpenAI(
+            base_url=config.base_url,
+            api_key=config.api_key,
+            timeout=600,
+            http_client=http_client,
+        )
 
-    def chat(self, system_prompt: str, user_prompt: str) -> str:
+    def chat(self, system_prompt: str, user_prompt: str, max_tokens: int | None = None) -> str:
         request = {
             "model": self.config.model,
             "messages": [
@@ -69,7 +76,7 @@ class VLLMClient:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": max_tokens or self.config.max_tokens,
         }
 
         try:
@@ -82,7 +89,8 @@ class VLLMClient:
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to call vLLM endpoint {self.config.base_url}. "
-                "Make sure vLLM is running and the model name is correct."
+                "Make sure vLLM is running and the model name is correct. "
+                f"Original error: {type(exc).__name__}: {exc}"
             ) from exc
 
         content = response.choices[0].message.content

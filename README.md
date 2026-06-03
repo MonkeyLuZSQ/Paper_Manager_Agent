@@ -1,22 +1,63 @@
 # Paper Manager
 
-这是一个基于 vLLM OpenAI-compatible API 的论文阅读 agent。它会读取 `./paper_rep/` 中指定的 PDF、TXT 或 Markdown 文献，先对长论文分块阅读，再按审稿人的方式输出：
+这是一个运行在 WSL 上的本地论文阅读 agent。它使用 vLLM 提供的 OpenAI-compatible Chat Completions API 调用本地模型，支持两种工作方式：
 
-- 摘要
-- 主要内容
-- 核心算法
-- 算例分析
-- 不足
+- `review`：读取 `paper_rep/` 中指定文献，生成审稿式总结报告。
+- `chat`：进入交互式 CLI agent。你可以指定 `paper_rep/` 中任意一篇文献让它总结，生成 Markdown 后继续围绕该文献问答。
 
-当前示例文献：
+当前项目针对 GTX 1660 Super 这类显存较小、不能使用 FlashAttention 2 的环境做了保守配置：不把整篇论文直接塞进 prompt，而是使用分块、检索、短期记忆和 token 预算控制。
+
+## Agent 框架
+
+目录结构：
 
 ```text
-paper_rep/Zhen 等 - 2024 - High-order space–time parallel computing of the Navier–Stokes equations.pdf
+paper_agent/
+├── cli.py              # CLI 入口：list / review / index / chat
+├── agent.py            # 交互式单 agent，包含受控 ReAct loop 和对话记忆
+├── tools.py            # 工具层：list_papers / search_papers / read_chunks / rebuild_index
+├── paper_store.py      # 文献索引：读取 PDF/TXT/MD，生成带 metadata 的 chunk
+├── retriever.py        # 本地关键词检索和 token 估算
+├── reviewer.py         # 一次性审稿总结流程
+├── llm_client.py       # vLLM OpenAI-compatible API 客户端
+├── prompts.py          # 审稿总结和压缩 prompt
+├── document_loader.py  # PDF/TXT/MD 文本读取
+├── text_utils.py       # 文本清洗和分块
+└── ../agent.md         # 专业审稿人式总结规范
 ```
 
-## 1. 环境准备
+数据目录：
 
-在本项目根目录准备 agent 运行环境：
+```text
+paper_rep/              # 放论文
+data/chunks/index.json  # 本地 chunk 索引
+outputs/                # 一次性 review 输出
+logs/                   # vLLM 启动日志
+```
+
+交互式 agent 的核心流程：
+
+```text
+用户指定要总结的文献，或提出论文相关问题
+  ↓
+如果是总结请求：解析 paper_rep 中的目标文献，阅读全文分块，输出 outputs/<论文名>总结.md
+  ↓
+如果是问答请求：优先检索当前选中文献的相关 chunk
+  ↓
+模型选择工具动作 search_papers / read_chunks / final_answer
+  ↓
+Python 外层最多允许 3 次工具调用
+  ↓
+基于 observation 生成回答
+  ↓
+保存最近对话，旧对话压缩为 conversation_summary
+```
+
+当前版本先使用轻量关键词检索，后续可以把 `retriever.py` 替换为 embedding + 向量数据库。
+
+## 环境准备
+
+在项目根目录执行：
 
 ```bash
 python3 -m venv .venv
@@ -24,7 +65,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-如果系统没有 `venv` 或 `pip`，但安装了 `uv`，可以使用：
+如果系统没有 `venv` 或 `pip`，但安装了 `uv`：
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv venv .venv
@@ -32,90 +73,7 @@ source .venv/bin/activate
 UV_CACHE_DIR=/tmp/uv-cache uv pip install -r requirements.txt
 ```
 
-依赖说明：
-
-- `openai`：调用 vLLM 的 OpenAI-compatible API
-- `pypdf`：读取 PDF 文本
-- `python-dotenv`：从 `.env` 加载配置
-
-## 2. 当前机器上的 vLLM 环境
-
-本次检查发现，当前 WSL 的系统 PATH 中没有 `vllm` 命令，系统 Python 也没有 `pip`。真正可用的 vLLM 命令位于：
-
-```text
-/mnt/e/LLM_Project/vllm_demo/.venv/bin/vllm
-```
-
-对应的 demo 启动脚本是：
-
-```text
-/mnt/e/LLM_Project/vllm_demo/serve_openai.sh
-```
-
-该脚本使用的 OpenAI API 模型名是：
-
-```text
-qwen3-4b
-```
-
-所以本项目应使用 `qwen3-4b`，而不是早期示例中的 `Qwen/Qwen2.5-7B-Instruct`。
-
-## 3. 启动 vLLM 服务
-
-请在另一个 WSL 终端启动 vLLM 服务。建议先只绑定本机回环地址：
-
-```bash
-cd /mnt/e/LLM_Project/vllm_demo
-source .venv/bin/activate
-vllm serve Qwen/Qwen3-4B-AWQ \
-  --quantization awq_marlin \
-  --dtype float16 \
-  --max-model-len 2048 \
-  --gpu-memory-utilization 0.70 \
-  --enforce-eager \
-  --served-model-name qwen3-4b \
-  --host 127.0.0.1 \
-  --port 8000
-```
-
-如果 4B 模型在 GTX 1660 Super 6GB + WSL 环境下启动很慢或迟迟不开放端口，可以先用小模型验证连通性：
-
-```bash
-cd /mnt/e/LLM_Project/vllm_demo
-source .venv/bin/activate
-vllm serve Qwen/Qwen3-0.6B \
-  --served-model-name qwen3-0.6b \
-  --host 127.0.0.1 \
-  --port 8000
-```
-
-关键点：`--served-model-name` 必须和 agent 使用的 `--model` 或 `.env` 里的 `VLLM_MODEL` 完全一致。
-
-## 4. 检查 vLLM 是否真的启动成功
-
-确认端口监听：
-
-```bash
-ss -ltnp | grep 8000
-```
-
-确认 OpenAI-compatible API 可访问：
-
-```bash
-curl http://127.0.0.1:8000/v1/models
-```
-
-只有 `curl` 返回模型列表后，paper agent 才能正常生成报告。仅仅“安装了 vLLM”还不够，必须有一个正在运行并监听 `8000` 的 vLLM API 服务。
-
-## 5. 配置 agent
-
-复制配置模板：
-
-```bash
-cp .env.example .env
-```
-
-当前 `.env.example` 内容：
+`.env.example`：
 
 ```text
 VLLM_MODEL=qwen3-4b
@@ -123,176 +81,355 @@ VLLM_BASE_URL=http://127.0.0.1:8000/v1
 VLLM_API_KEY=EMPTY
 ```
 
-如果你启动的是小模型连通性测试服务，请把模型名改为：
+## vLLM 启动配置
+
+当前机器上的 vLLM 命令位于：
 
 ```text
-VLLM_MODEL=qwen3-0.6b
+/mnt/e/LLM_Project/vllm_demo/.venv/bin/vllm
 ```
 
-## 6. 放入论文
-
-把要分析的文献放入：
+并已通过下面的软链接加入 PATH：
 
 ```text
-paper_rep/
+/home/zhengsq/.local/bin/vllm -> /mnt/e/LLM_Project/vllm_demo/.venv/bin/vllm
 ```
 
-支持格式：
-
-- `.pdf`
-- `.txt`
-- `.md`
-
-如果 PDF 是扫描版图片，`pypdf` 可能无法抽取正文，需要先做 OCR，保存为可搜索 PDF 或文本文件。
-
-## 7. 查看可用文献
-
-```bash
-python3 -m paper_agent.cli --list
-```
-
-当前测试可识别：
+模型优先使用本地 ModelScope 缓存：
 
 ```text
-Zhen 等 - 2024 - High-order space–time parallel computing of the Navier–Stokes equations.pdf
+/home/zhengsq/.cache/modelscope/hub/models/Qwen/Qwen3-4B-AWQ
 ```
 
-## 8. 运行论文审稿 agent
-
-如果 `.env` 中配置的是 `qwen3-4b`：
+GTX 1660 Super 的 compute capability 是 7.5，不支持 FlashAttention 2，因此启动参数必须包含：
 
 ```bash
-python3 -m paper_agent.cli "Zhen 等 - 2024 - High-order space–time parallel computing of the Navier–Stokes equations.pdf" --chunk-chars 3000 --overlap 300 --max-tokens 900
+--attention-backend TRITON_ATTN
 ```
 
-也可以显式指定模型：
+项目中的 `start_vllm_qwen3_4b.sh` 会使用本地模型路径，并绑定：
 
 ```bash
-python3 -m paper_agent.cli "Zhen 等 - 2024 - High-order space–time parallel computing of the Navier–Stokes equations.pdf" --model qwen3-4b --chunk-chars 3000 --overlap 300 --max-tokens 900
+--host 0.0.0.0
+--port 8000
 ```
 
-如果你先用小模型 `qwen3-0.6b` 做连通性测试：
+绑定 `0.0.0.0` 是为了解决 WSL 中 `ss` 能看到监听，但 Codex/代理环境访问 `127.0.0.1:8000` 不稳定的问题。
+
+## 一键启动交互式 Agent
+
+推荐直接运行：
 
 ```bash
-python3 -m paper_agent.cli "Zhen 等 - 2024 - High-order space–time parallel computing of the Navier–Stokes equations.pdf" --model qwen3-0.6b --chunk-chars 2000 --overlap 200 --max-tokens 600
+./run_agent_wsl.sh
 ```
 
-生成结果会写入：
+脚本会自动完成：
+
+1. 查找 vLLM 命令。
+2. 优先使用本地 ModelScope 模型缓存。
+3. 检查 vLLM API 是否可用。
+4. 如果端口假监听或旧进程卡住，自动停止并重启 vLLM。
+5. 自动探测可访问的 WSL IP，例如 `http://169.254.x.x:8000/v1`。
+6. 绕过本机代理变量，避免 `localhost` 请求被 `http_proxy=127.0.0.1:7890` 截走。
+7. 构建本地 chunk 索引。
+8. 进入交互式 CLI：
 
 ```text
-outputs/Zhen 等 - 2024 - High-order space–time parallel computing of the Navier–Stokes equations_review.md
+User>
 ```
 
-## 9. 工作流程
-
-agent 的处理流程如下：
-
-1. 从 `paper_rep/` 定位指定文献，支持完整文件名或唯一的部分文件名。
-2. 使用 `pypdf` 读取 PDF，或直接读取 TXT/Markdown。
-3. 对长论文进行文本清洗和分块。
-4. 对每个分块生成局部审稿笔记，包括主题、方法、实验、创新点和不足。
-5. 汇总所有分块笔记，生成最终报告。
-6. 将报告保存到 `outputs/`。
-
-## 10. 常用参数
-
-- `--paper-dir`：论文目录，默认 `paper_rep`
-- `--output-dir`：报告输出目录，默认 `outputs`
-- `--model`：vLLM 服务模型名，也可用 `VLLM_MODEL` 配置
-- `--base-url`：vLLM 服务地址，默认 `http://localhost:8000/v1`
-- `--api-key`：API key，本地 vLLM 通常使用 `EMPTY`
-- `--chunk-chars`：长论文分块长度
-- `--overlap`：分块重叠长度
-- `--temperature`：生成温度，默认 `0.2`
-- `--max-tokens`：每次模型输出上限
-
-因为当前 vLLM demo 的 `--max-model-len` 建议设为 `2048` 或 `4096`，不建议直接使用默认 `--chunk-chars 12000`。本机建议从下面的参数开始：
-
-```bash
---chunk-chars 3000 --overlap 300 --max-tokens 900
-```
-
-## 11. 本次环境检查记录
-
-检查日期：2026-06-02。
-
-已确认：
-
-- `paper_rep` 中已有 PDF 文献，CLI 可以识别。
-- PDF 文本抽取成功，抽取到 `63182` 个字符。
-- 默认分块参数下可分为 `6` 个文本块。
-- `python3 -m compileall paper_agent` 通过。
-- 当前普通 Codex 命令运行在网络隔离沙箱中，普通 `ps/ss` 看不到真实 WSL 网络；已使用非沙箱权限检查真实 WSL 环境。
-- 真实 WSL 环境中没有长期运行的 vLLM 服务进程。
-- `ss -ltnp` 没有发现 `8000` 端口监听。
-- `which vllm` 没有返回；vLLM 不在系统 PATH。
-- 可用 vLLM 命令在 `/mnt/e/LLM_Project/vllm_demo/.venv/bin/vllm`，版本为 `0.20.2`。
-- `vllm_demo/serve_openai.sh` 的 served model name 是 `qwen3-4b`。
-
-尝试结果：
-
-- 使用 `Qwen/Qwen3-4B-AWQ`、`qwen3-4b`、`127.0.0.1:8000` 启动 vLLM，能够进入模型加载阶段。
-- GTX 1660 Super 6GB 不支持 FlashAttention 2，vLLM 自动切换到 FLASHINFER。
-- 两次启动都长时间停留在 EngineCore/model loading 阶段，没有开放 `127.0.0.1:8000`。
-- 继续测试 `Qwen/Qwen3-0.6B` 小模型，现象相同：进入 EngineCore/model loading 阶段后没有开放 `8000`。
-- 检查 HuggingFace 缓存发现，`Qwen3-0.6B` 和 `Qwen3-4B-AWQ` 缓存目录都只有约 `16M`，且 `Qwen3-0.6B` 存在 `.incomplete` 文件，说明模型权重没有完整下载。
-- 因此完整论文报告生成尚未完成，当前阻塞点是 vLLM 模型下载/加载没有完成，导致 OpenAI API 服务没有成功监听端口；不是 paper agent 的 PDF 读取或分块逻辑问题。
-
-建议下一步：
-
-1. 先完整下载一个小模型，例如 `Qwen/Qwen3-0.6B`。如果网络访问 HuggingFace 不稳定，可以配置 ModelScope 或代理后重新下载。
-2. 删除不完整缓存后重新启动 vLLM，确认 `curl http://127.0.0.1:8000/v1/models` 可返回模型列表。
-3. 再用 `--model qwen3-0.6b` 跑 agent，验证完整调用链路。
-4. 确认链路正常后，再切回 `Qwen/Qwen3-4B-AWQ`，逐步调大 `--max-model-len` 和 agent 的 `--chunk-chars`。
-
-不完整缓存路径示例：
+退出：
 
 ```text
-/home/zhengsq/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B
-/home/zhengsq/.cache/huggingface/hub/models--Qwen--Qwen3-4B-AWQ
+exit
+quit
+q
 ```
 
-## 12. 常见问题
+示例问题：
 
-### 找不到论文
+```text
+User> 请总结 Li 和 Han 这篇文献
+User> 总结 Zhen 等 - 2024 - High-order space–time parallel computing of the Navier–Stokes equations.pdf
+User> 它的核心算法步骤是什么？
+User> 论文中的算例如何验证方法有效性？
+```
 
-确认文件确实放在 `paper_rep/` 下，并且后缀是 `.pdf`、`.txt` 或 `.md`：
+总结完成后会生成：
+
+```text
+outputs/<PDF文章文件名去掉扩展名>总结.md
+```
+
+并将该文献设为当前交互上下文。后续问题会优先围绕这篇文献检索回答。
+
+## 一次性审稿总结
+
+如果只想生成固定格式的审稿报告，可以用旧模式：
 
 ```bash
-python3 -m paper_agent.cli --list
+AGENT_MODE=review ./run_agent_wsl.sh
 ```
 
-### 缺少依赖
+输出目录：
 
-如果看到 `openai is required` 或 `pypdf is required`，说明依赖还没有装好：
+```text
+outputs/
+```
+
+报告结构：
+
+```text
+# 摘要
+# 主要内容
+# 核心算法
+# 算例分析
+```
+
+也可以手动运行：
 
 ```bash
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m paper_agent.cli "Zhen 等 - 2024 - High-order space–time parallel computing of the Navier–Stokes equations.pdf" \
+  --model qwen3-4b \
+  --base-url http://169.254.162.26:8000/v1 \
+  --chunk-chars 3000 \
+  --overlap 300 \
+  --max-tokens 500
 ```
 
-使用 `uv` 时：
+其中 `base-url` 以一键脚本探测到的地址为准。
+
+总结 Markdown 文件名统一采用：
+
+```text
+论文文件名总结.md
+```
+
+## 手动使用 CLI
+
+查看论文：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv pip install -r requirements.txt
+python -m paper_agent.cli --list
 ```
 
-### 无法连接 vLLM
+构建索引：
+
+```bash
+python -m paper_agent.cli index
+```
+
+启动交互式 agent：
+
+```bash
+python -m paper_agent.cli chat \
+  --model qwen3-4b \
+  --base-url http://169.254.162.26:8000/v1 \
+  --max-tokens 500 \
+  --max-input-tokens 1000
+```
+
+索引参数：
+
+```bash
+python -m paper_agent.cli index \
+  --chunk-chars 1800 \
+  --overlap 180 \
+  --index-path data/chunks/index.json
+```
+
+## 上下文控制
+
+当前 vLLM 启动使用：
+
+```bash
+--max-model-len 2048
+```
+
+这意味着 prompt token + output token 总和不能超过 2048。项目中做了几层控制：
+
+- 交互式 agent 默认 `--max-input-tokens 1000`。
+- 一键脚本默认 `AGENT_MAX_TOKENS=500`。
+- 检索只取少量相关 chunk。
+- 旧对话不会无限塞进 prompt，会压缩为 `conversation_summary`。
+- 一次性 review 会先生成短分块笔记，再多轮压缩，最后汇总。
+
+可以按显存和速度调整：
+
+```bash
+AGENT_MAX_TOKENS=500 ./run_agent_wsl.sh
+AGENT_CHUNK_CHARS=2500 AGENT_OVERLAP=250 AGENT_MODE=review ./run_agent_wsl.sh
+VLLM_WAIT_SECONDS=1200 ./run_agent_wsl.sh
+```
+
+## 常见问题
+
+### vLLM: command not found
+
+确认：
+
+```bash
+which vllm
+vllm --version
+```
+
+如果没有结果，设置：
+
+```bash
+export VLLM_BIN=/mnt/e/LLM_Project/vllm_demo/.venv/bin/vllm
+```
+
+### 8000 没有监听
+
+先看日志：
+
+```bash
+tail -n 120 /tmp/paper_agent_logs/vllm_qwen3-4b_8000.log
+```
+
+确认端口：
+
+```bash
+ss -ltnp | grep 8000
+```
+
+一键脚本会自动处理多数情况，包括旧 vLLM 进程卡住、模型路径错误、端口假监听。
+
+### curl 访问 localhost 返回 502
+
+这是代理变量导致的常见问题。当前脚本会使用：
+
+```bash
+curl --noproxy '*'
+```
+
+并在运行 agent 时清理：
+
+```text
+http_proxy
+https_proxy
+HTTP_PROXY
+HTTPS_PROXY
+ALL_PROXY
+```
+
+`llm_client.py` 也会让 OpenAI/httpx 客户端忽略系统代理环境，避免手动 CLI 调用 vLLM 时被代理截走。
+
+### token 超限
 
 如果看到：
 
 ```text
-Failed to call vLLM endpoint http://127.0.0.1:8000/v1
+maximum context length is 2048 tokens
 ```
 
-请检查：
+降低输出和输入预算：
 
-- vLLM 服务是否已经启动
-- `8000` 端口是否正在监听
-- `curl http://127.0.0.1:8000/v1/models` 是否返回模型列表
-- `VLLM_BASE_URL` 或 `--base-url` 是否正确
-- `VLLM_MODEL` 或 `--model` 是否与 `--served-model-name` 一致
+```bash
+AGENT_MAX_TOKENS=400 ./run_agent_wsl.sh
+python -m paper_agent.cli chat --max-input-tokens 1200 --max-tokens 400
+```
 
-### PDF 没有正文
+### 生成很慢
 
-如果提示没有可抽取文本，通常说明 PDF 是扫描版。请先 OCR，再放入 `paper_rep/`。
+GTX 1660 Super 上 4B 模型生成速度有限。优先减少每轮输出：
+
+```bash
+AGENT_MAX_TOKENS=400 ./run_agent_wsl.sh
+```
+
+也可以先用小模型验证链路：
+
+```bash
+VLLM_MODEL_PATH=Qwen/Qwen3-0.6B VLLM_MODEL=qwen3-0.6b ./run_agent_wsl.sh
+```
+
+## 当前测试结论
+
+已确认：
+
+- PDF 文献可以读取。
+- 本地 chunk 索引可以构建。
+- vLLM 可以使用本地 ModelScope `Qwen3-4B-AWQ` 启动。
+- `--attention-backend TRITON_ATTN` 可以避开 FlashAttention 2 限制。
+- 绑定 `0.0.0.0` 后，WSL IP 可以访问 vLLM API。
+- 交互式 agent 已支持检索工具、简化 ReAct loop、短期记忆和上下文预算。
+- 最小真实问答已通过：agent 可以检索当前论文片段，并回答“这篇论文主要研究什么？”。
+
+## 总结流程优化记录
+
+本次为了适配本地 `qwen3-4b + GTX 1660 + vLLM + WSL`，对总结流程做了最小侵入式优化。
+
+修改文件：
+
+- `paper_agent/reviewer.py`：新增 `summary_mode`，实现 quick/standard/deep 三种总结模式；新增精选 chunk、review notes 缓存和 LLM 调用计数。
+- `paper_agent/agent.py`：根据用户意图自动选择总结模式；deep 模式开始前提示 `Deep review will be slower on local GPU.`。
+- `paper_agent/cli.py`：一次性 review 模式新增 `--summary-mode` 参数。
+- `paper_agent/prompts.py`：压缩最终总结 prompt，减少 2048 上下文超限风险。
+- `run_agent_wsl.sh`：默认 `AGENT_MAX_TOKENS=500`，review 模式支持 `SUMMARY_MODE=quick|standard|deep`。
+- `agent.md`：补充三种总结模式说明，保留专业审稿人式输出规范。
+- `README.md`：更新使用说明和本优化记录。
+
+三种模式区别：
+
+```text
+quick    默认模式，最多精选 8 个 chunk，不做多轮压缩，适合“总结一下 / 简单总结 / 这篇论文讲什么”。
+standard 中等模式，最多精选 12 个 chunk，允许一轮 notes compression。
+deep     深度模式，最多 30 个 chunk，允许多轮 compression，仅在“深度阅读 / 详细综述 / 完整 review”等明确请求时启用。
+```
+
+chunk review 缓存位置：
+
+```text
+data/review_cache/<论文名>/<summary_mode>_notes.json
+```
+
+缓存的是分块审稿笔记。再次总结同一篇论文、同一模式时，会复用 notes，只重新做必要压缩和最终汇总。
+
+避免 2048 上下文超限的方法：
+
+- quick 默认只精选关键章节 chunk，而不是全文 30 个 chunk。
+- 每个精选 chunk 会截断到较短文本。
+- quick 不做多轮压缩，standard 只做一轮压缩，deep 才做多轮压缩。
+- 分块笔记输出预算降到约 `240` tokens。
+- 压缩笔记输出预算降到约 `220` tokens。
+- 最终报告输出预算默认限制为 `500` tokens。
+- 最终 prompt 不再整段塞入 `agent.md`，只保留必要总结规则。
+
+查看每次总结的 LLM 调用次数：
+
+交互式总结完成后，agent 会输出：
+
+```text
+总结模式：quick；本次总结 LLM 调用次数：N
+```
+
+一次性 review 模式会输出：
+
+```text
+Reviewed N selected chunk(s) in quick mode.
+LLM calls: N
+```
+
+手动指定模式：
+
+```bash
+SUMMARY_MODE=standard AGENT_MODE=review ./run_agent_wsl.sh
+SUMMARY_MODE=deep AGENT_MODE=review ./run_agent_wsl.sh
+```
+
+交互式模式中：
+
+```text
+User> 帮我总结下 Zhen 这篇论文
+```
+
+默认 quick。
+
+```text
+User> 请对 Zhen 这篇论文做深度阅读和完整 review
+```
+
+触发 deep。

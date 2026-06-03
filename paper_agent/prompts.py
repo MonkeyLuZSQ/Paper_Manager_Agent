@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 REVIEWER_SYSTEM_PROMPT = """你是一名严谨的学术论文审稿人和研究助理。
 你的任务是阅读论文内容，提炼贡献，也要批判性地识别假设、实验、算法描述和结论中的不足。
 请使用中文回答，措辞清晰、具体、可追溯，不要编造论文中没有出现的信息。
 如果证据不足，请明确写出“论文片段中未说明”或“需要阅读全文确认”。
 """
+
+
+def agent_instructions(path: Path = Path("agent.md")) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="ignore").strip()
 
 
 def chunk_review_prompt(chunk_index: int, total_chunks: int, paper_text: str) -> str:
@@ -33,7 +41,7 @@ def final_review_prompt(paper_name: str, notes: list[str]) -> str:
     )
     return f"""请基于以下分片审稿笔记，对论文《{paper_name}》形成一份完整的审稿式阅读总结。
 
-必须严格按以下五个一级标题组织：
+必须严格按以下四个一级标题组织：
 
 # 摘要
 用 1-2 段概括论文研究问题、方法、结论和整体价值。
@@ -49,17 +57,35 @@ def final_review_prompt(paper_name: str, notes: list[str]) -> str:
 总结论文中的实验、算例、数据集、评价指标、对比方法和主要结果，并说明这些结果如何支撑论文观点。
 如果实验细节不足，请明确指出缺失内容。
 
-# 不足
-以审稿人的口吻列出论文可能存在的问题，包括但不限于：创新性、假设合理性、算法解释、实验设计、对比基线、消融实验、泛化性、复现性、写作清晰度。
-每个不足尽量说明为什么它重要，以及作者可以如何改进。
-
 要求：
 - 使用中文。
+- 以专业审稿人的角度写作。
 - 优先依据笔记中的证据，不要臆测。
-- 不要输出与上述五个一级标题无关的额外一级标题。
+- 不要输出与上述四个一级标题无关的额外一级标题。
+- Markdown 文件将由程序保存为“论文文件名总结.md”，你只需要输出 Markdown 正文。
 - 内容要具体，避免空泛评价。
 
 分片审稿笔记如下：
+```text
+{joined_notes}
+```
+"""
+
+
+def compact_notes_prompt(batch_index: int, total_batches: int, notes: list[str]) -> str:
+    joined_notes = "\n\n".join(
+        f"===== 笔记 {index} =====\n{note}"
+        for index, note in enumerate(notes, start=1)
+    )
+    return f"""下面是论文分片审稿笔记的第 {batch_index}/{total_batches} 批。请压缩为一份中间审稿摘要。
+
+要求：
+- 使用中文。
+- 保留论文主题、核心方法、算法/公式、算例证据、创新点和不足。
+- 尽量精炼，不要逐条复述原文。
+- 不要编造笔记中没有的信息。
+
+审稿笔记：
 ```text
 {joined_notes}
 ```
