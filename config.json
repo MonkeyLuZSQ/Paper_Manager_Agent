@@ -1,7 +1,15 @@
 {
-  "embedding_model": null,
-  "embedding_multilingual": false,
+  "embedding_enabled": true,
+  "embedding_backend": "auto",
+  "embedding_model": "BAAI/bge-m3",
+  "embedding_hashing_model": "local-hashing-multilingual-v1",
+  "embedding_fallback_model": "paraphrase-multilingual-MiniLM-L12-v2",
+  "embedding_device": "cpu",
+  "embedding_batch_size": 8,
+  "embedding_normalize": true,
+  "embedding_multilingual": true,
+  "embedding_hash_dim": 768,
   "enable_query_translation": true,
   "enable_keyword_expansion": true,
-  "retrieval_backend": "keyword_hybrid"
+  "retrieval_backend": "hybrid"
 }

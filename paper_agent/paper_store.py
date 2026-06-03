@@ -20,6 +20,8 @@ class PaperChunk:
     section: str
     page: int | None
     text: str
+    title: str = ""
+    token_count: int = 0
 
 
 def list_supported_papers(paper_dir: Path) -> list[Path]:
@@ -54,9 +56,11 @@ def build_index(
                     chunk_id=f"{paper_id}_{index:04d}",
                     paper_id=paper_id,
                     paper_name=paper_path.name,
+                    title=paper_path.stem,
                     section=_infer_section(chunk),
                     page=inferred_page or current_page,
                     text=chunk,
+                    token_count=_count_tokens(chunk),
                 )
             )
 
@@ -65,6 +69,7 @@ def build_index(
         json.dumps([asdict(chunk) for chunk in chunks], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    _try_build_embedding_index(chunks)
     return chunks
 
 
@@ -72,7 +77,7 @@ def load_index(index_path: Path = DEFAULT_INDEX_PATH) -> list[PaperChunk]:
     if not index_path.exists():
         return []
     data = json.loads(index_path.read_text(encoding="utf-8"))
-    return [PaperChunk(**item) for item in data]
+    return [_chunk_from_dict(item) for item in data]
 
 
 def load_or_build_index(
@@ -115,3 +120,30 @@ def _infer_section(text: str) -> str:
         if keyword in lowered:
             return section
     return "Unknown"
+
+
+def _chunk_from_dict(item: dict) -> PaperChunk:
+    text = str(item.get("text") or "")
+    return PaperChunk(
+        chunk_id=str(item.get("chunk_id") or ""),
+        paper_id=str(item.get("paper_id") or ""),
+        paper_name=str(item.get("paper_name") or item.get("title") or ""),
+        title=str(item.get("title") or Path(str(item.get("paper_name") or "")).stem),
+        section=str(item.get("section") or "Unknown"),
+        page=item.get("page"),
+        text=text,
+        token_count=int(item.get("token_count") or _count_tokens(text)),
+    )
+
+
+def _count_tokens(text: str) -> int:
+    return len(re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\w\s]", text, flags=re.UNICODE))
+
+
+def _try_build_embedding_index(chunks: list[PaperChunk]) -> None:
+    try:
+        from paper_agent.vector_retriever import ensure_chunk_embeddings
+
+        ensure_chunk_embeddings(chunks)
+    except Exception as exc:
+        print(f"Embedding index skipped: {exc}")

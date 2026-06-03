@@ -13,8 +13,18 @@ CLIENT_SELECTED=0
 MODEL_NAME="${VLLM_MODEL:-qwen3-4b}"
 MODEL_PATH="${VLLM_MODEL_PATH:-/home/zhengsq/.cache/modelscope/hub/models/Qwen/Qwen3-4B-AWQ}"
 MODEL_FALLBACK="${VLLM_MODEL_FALLBACK:-Qwen/Qwen3-4B-AWQ}"
+MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-2048}"
+GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.70}"
+KV_CACHE_DTYPE="${VLLM_KV_CACHE_DTYPE:-auto}"
+ENABLE_PREFIX_CACHING="${VLLM_ENABLE_PREFIX_CACHING:-1}"
+ENABLE_CHUNKED_PREFILL="${VLLM_ENABLE_CHUNKED_PREFILL:-0}"
+MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-}"
+MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-4}"
+ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-1}"
+KV_CACHE_METRICS="${VLLM_KV_CACHE_METRICS:-0}"
 WAIT_SECONDS="${VLLM_WAIT_SECONDS:-900}"
 RESTART_STALE="${VLLM_RESTART_STALE:-1}"
+FORCE_RESTART="${VLLM_FORCE_RESTART:-0}"
 LOG_DIR="${LOG_DIR:-/tmp/paper_agent_logs}"
 VLLM_LOG="$LOG_DIR/vllm_${MODEL_NAME}_${PORT}.log"
 VLLM_PID_FILE="$LOG_DIR/vllm_${MODEL_NAME}_${PORT}.pid"
@@ -137,17 +147,38 @@ start_vllm() {
   log "vLLM log: $VLLM_LOG"
   : > "$VLLM_LOG"
 
-  nohup "$vllm_bin" serve "$source" \
-    --quantization awq_marlin \
-    --dtype float16 \
-    --max-model-len 2048 \
-    --gpu-memory-utilization 0.70 \
-    --attention-backend TRITON_ATTN \
-    --enforce-eager \
-    --served-model-name "$MODEL_NAME" \
-    --host "$BIND_HOST" \
-    --port "$PORT" \
-    >"$VLLM_LOG" 2>&1 &
+  local serve_args=(
+    "$vllm_bin" serve "$source"
+    --quantization awq_marlin
+    --dtype float16
+    --max-model-len "$MAX_MODEL_LEN"
+    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
+    --kv-cache-dtype "$KV_CACHE_DTYPE"
+    --max-num-seqs "$MAX_NUM_SEQS"
+    --attention-backend TRITON_ATTN
+    --served-model-name "$MODEL_NAME"
+    --host "$BIND_HOST"
+    --port "$PORT"
+  )
+
+  if [ "$ENABLE_PREFIX_CACHING" = "1" ]; then
+    serve_args+=(--enable-prefix-caching)
+  fi
+  if [ "$ENABLE_CHUNKED_PREFILL" = "1" ]; then
+    serve_args+=(--enable-chunked-prefill)
+  fi
+  if [ -n "$MAX_NUM_BATCHED_TOKENS" ]; then
+    serve_args+=(--max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
+  fi
+  if [ "$ENFORCE_EAGER" = "1" ]; then
+    serve_args+=(--enforce-eager)
+  fi
+  if [ "$KV_CACHE_METRICS" = "1" ]; then
+    serve_args+=(--kv-cache-metrics)
+  fi
+
+  log "vLLM max_model_len=$MAX_MODEL_LEN gpu_memory_utilization=$GPU_MEMORY_UTILIZATION kv_cache_dtype=$KV_CACHE_DTYPE max_num_seqs=$MAX_NUM_SEQS prefix_caching=$ENABLE_PREFIX_CACHING chunked_prefill=$ENABLE_CHUNKED_PREFILL enforce_eager=$ENFORCE_EAGER"
+  nohup "${serve_args[@]}" >"$VLLM_LOG" 2>&1 &
 
   echo "$!" > "$VLLM_PID_FILE"
   log "vLLM launcher PID: $(cat "$VLLM_PID_FILE")"
@@ -181,7 +212,13 @@ wait_for_vllm() {
   done
 }
 
-if api_ready; then
+if [ "$FORCE_RESTART" = "1" ]; then
+  log "VLLM_FORCE_RESTART=1; restarting vLLM before running agent."
+  RESTART_STALE=1
+  stop_stale_vllm
+  start_vllm
+  wait_for_vllm
+elif api_ready; then
   log "Reusing running vLLM API at $BASE_URL"
 else
   if ! port_listening; then

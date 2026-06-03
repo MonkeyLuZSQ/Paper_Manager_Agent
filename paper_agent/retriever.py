@@ -98,7 +98,8 @@ def format_retrieved_chunks(results: list[RetrievedChunk]) -> str:
         chunk = result.chunk
         page = f", page={chunk.page}" if chunk.page else ", page=unknown"
         formatted.append(
-            f"[{index}] paper_id={chunk.paper_id}, page={page.removeprefix(', page=')}, "
+            f"[{index}] paper_id={chunk.paper_id}, title={chunk.title or chunk.paper_name}, "
+            f"page={page.removeprefix(', page=')}, "
             f"section={chunk.section}, chunk_id={chunk.chunk_id}, score={result.score:.2f}\n"
             f"{chunk.text}"
         )

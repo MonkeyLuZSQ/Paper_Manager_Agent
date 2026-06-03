@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from paper_agent.paper_store import PaperChunk, build_index, list_supported_papers, load_or_build_index
-from paper_agent.retriever import RetrievedChunk, format_retrieved_chunks, hybrid_search_chunks
+from paper_agent.retriever import RetrievedChunk, format_retrieved_chunks
 from paper_agent.reviewer import resolve_paper_path
+from paper_agent.vector_retriever import retrieve
 
 
 @dataclass
@@ -37,7 +38,7 @@ class ToolBox:
 
     def search_papers(self, query: str, top_k: int = 5, paper_name: str | None = None) -> str:
         chunks = self.chunks_for_paper(paper_name) if paper_name else self.chunks
-        results = hybrid_search_chunks(chunks, query=query, top_k=top_k)
+        results = retrieve(query, chunks=chunks, top_k=top_k, mode="hybrid")
         if not results and _needs_fallback(query):
             priority = _fallback_priority(query)
             selected = sorted(
