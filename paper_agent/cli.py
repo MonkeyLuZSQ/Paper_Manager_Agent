@@ -176,6 +176,7 @@ def chat_main(argv: list[str]) -> int:
             print(f"Using vLLM endpoint: {config.base_url}")
             print(f"Using model: {config.model}")
             print(f"Loaded {len(agent.tools.chunks)} indexed chunk(s).")
+            print("小智：朋友你好，我是小智，专业文献审稿人。论文我来啃，证据我来找，槽点也不会放过。")
             print("Type exit, quit, or q to leave.")
 
             while True:

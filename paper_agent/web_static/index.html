@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MonkeyLu's Paper Manager Agent</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true">ML</div>
+        <div>
+          <h1>MonkeyLu's Paper Manager Agent</h1>
+          <p id="runtimeLine">vLLM paper intelligence workspace</p>
+        </div>
+        <button id="refreshBtn" class="ghost-button" type="button">Refresh</button>
+      </header>
+
+      <main class="workspace">
+        <aside class="sidebar">
+          <section class="panel compact">
+            <div class="panel-title">
+              <span>Library</span>
+              <button id="indexBtn" class="small-button" type="button">Index</button>
+            </div>
+            <div id="paperList" class="list"></div>
+          </section>
+
+          <section class="panel compact">
+            <div class="panel-title">
+              <span>Reports</span>
+            </div>
+            <div id="outputList" class="list"></div>
+          </section>
+
+          <section class="panel compact">
+            <div class="panel-title">
+              <span>Runtime</span>
+            </div>
+            <dl class="facts">
+              <dt>Chunks</dt>
+              <dd id="chunkCount">-</dd>
+              <dt>Embedding</dt>
+              <dd id="embeddingState">-</dd>
+              <dt>Active</dt>
+              <dd id="activePaper">-</dd>
+            </dl>
+          </section>
+        </aside>
+
+        <section class="main-panel">
+          <div class="search-strip">
+            <input id="messageInput" type="text" autocomplete="off" placeholder="总结 Zhen 这篇论文，或询问核心算法、算例、创新点..." />
+            <button id="sendBtn" type="button">Ask</button>
+          </div>
+
+          <div id="chatLog" class="chat-log" aria-live="polite">
+            <article class="message agent">
+              <div class="message-role">小智</div>
+              <div class="message-body">朋友你好，我是小智，专业文献审稿人。把论文交给我，我会用专业眼光读重点，也会用一点幽默感帮你抵抗长论文的压迫感。</div>
+            </article>
+          </div>
+        </section>
+
+        <aside class="reader">
+          <div class="panel-title">
+            <span>Markdown Preview</span>
+          </div>
+          <pre id="reportPreview">No report selected.</pre>
+        </aside>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

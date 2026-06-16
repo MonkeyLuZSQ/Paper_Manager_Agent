@@ -257,6 +257,15 @@ if [ "$AGENT_MODE" = "review" ]; then
     --overlap "$OVERLAP" \
     --max-tokens "$MAX_TOKENS" \
     --summary-mode "${SUMMARY_MODE:-quick}"
+elif [ "$AGENT_MODE" = "web" ]; then
+  log "Building local chunk index before web UI."
+  env "${COMMON_ENV[@]}" python -m paper_agent.cli index
+  log "Starting web UI at http://${WEB_HOST:-127.0.0.1}:${WEB_PORT:-7860}"
+  env "${COMMON_ENV[@]}" python -m paper_agent.web_app \
+    --model "$MODEL_NAME" \
+    --base-url "$BASE_URL" \
+    --max-tokens "$MAX_TOKENS" \
+    --max-input-tokens "${AGENT_MAX_INPUT_TOKENS:-1000}"
 else
   log "Building local chunk index before chat."
   env "${COMMON_ENV[@]}" python -m paper_agent.cli index

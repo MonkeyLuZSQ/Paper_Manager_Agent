@@ -6,6 +6,8 @@ Paper Manager 是一个基于本地 vLLM 的文献阅读 agent。它面向“英
 
 - 读取 `paper_rep/` 中的 PDF/TXT/MD 文献。
 - 交互式问答：指定当前文献后可连续追问。
+- Agent 身份：小智，一个幽默但专业的文献审稿人，开场会称呼用户为“朋友”。
+- Web 界面：`MonkeyLu's Paper Manager Agent` 学术检索风格工作台。
 - 审稿式总结：输出 `# 摘要`、`# 主要内容`、`# 核心算法`、`# 算例分析`。
 - 三种总结模式：`quick` 默认、`standard` 中等、`deep` 深度。
 - 中英文检索：中文 query 自动改写为英文 query、关键词 query 和 section hints。
@@ -32,6 +34,8 @@ paper_agent/
 ├── embedding_client.py            # embedding 客户端
 ├── reviewer.py                    # quick/standard/deep 总结流程
 ├── prompts.py                     # prompt 模板
+├── web_app.py                     # Web 界面服务
+├── web_static/                    # Web 前端资源
 └── llm_client.py                  # vLLM OpenAI-compatible 客户端
 ```
 
@@ -122,7 +126,7 @@ python -m paper_agent.cli chat \
 简单记：
 
 ```text
-run_agent_wsl.sh          启动/复用 vLLM + 构建索引 + 启动 agent
+run_agent_wsl.sh          启动/复用 vLLM + 构建索引 + 启动 agent 或 Web UI
 start_vllm_qwen3_4b.sh    只启动 vLLM API 服务
 ```
 
@@ -132,6 +136,24 @@ start_vllm_qwen3_4b.sh    只启动 vLLM API 服务
 
 ```bash
 ./run_agent_wsl.sh
+```
+
+启动网页界面：
+
+```bash
+AGENT_MODE=web ./run_agent_wsl.sh
+```
+
+默认访问：
+
+```text
+http://127.0.0.1:7860
+```
+
+如需修改监听地址：
+
+```bash
+WEB_HOST=0.0.0.0 WEB_PORT=7860 AGENT_MODE=web ./run_agent_wsl.sh
 ```
 
 交互示例：
