@@ -17,6 +17,8 @@ Paper Manager 是一个基于本地 vLLM 的文献阅读 agent。它面向“英
 ## 目录结构
 
 ```text
+AGENTS.md                          # Codex/编码助手仓库级指令
+agent.md                           # 小智运行时审稿 prompt
 paper_rep/                         # 放论文
 outputs/                           # 总结 Markdown
 data/chunks/index.json             # chunk 文本索引
