@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 
 
@@ -47,7 +48,9 @@ class LLMConfig:
 
 
 class VLLMClient:
-    """Small wrapper around vLLM's OpenAI-compatible chat endpoint."""
+    """Small wrapper around vLLM's OpenAI-compatible chat endpoint with retry."""
+
+    _thinking_supported: bool | None = None
 
     def __init__(self, config: LLMConfig):
         try:
@@ -79,19 +82,32 @@ class VLLMClient:
             "max_tokens": max_tokens or self.config.max_tokens,
         }
 
-        try:
-            response = self._client.chat.completions.create(
-                **request,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-            )
-        except TypeError:
-            response = self._client.chat.completions.create(**request)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to call vLLM endpoint {self.config.base_url}. "
-                "Make sure vLLM is running and the model name is correct. "
-                f"Original error: {type(exc).__name__}: {exc}"
-            ) from exc
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                if VLLMClient._thinking_supported is not False:
+                    response = self._client.chat.completions.create(
+                        **request,
+                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    )
+                    if VLLMClient._thinking_supported is None:
+                        VLLMClient._thinking_supported = True
+                else:
+                    response = self._client.chat.completions.create(**request)
+                content = response.choices[0].message.content
+                return content.strip() if content else ""
+            except TypeError:
+                VLLMClient._thinking_supported = False
+                continue
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 2:
+                    wait = 2 ** attempt
+                    print(f"LLM call failed ({exc}), retrying in {wait}s...")
+                    time.sleep(wait)
 
-        content = response.choices[0].message.content
-        return content.strip() if content else ""
+        raise RuntimeError(
+            f"Failed to call vLLM endpoint {self.config.base_url} after 3 attempts. "
+            "Make sure vLLM is running and the model name is correct. "
+            f"Last error: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc

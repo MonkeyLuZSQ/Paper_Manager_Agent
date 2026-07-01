@@ -8,6 +8,8 @@ from pathlib import Path
 
 TERMS_PATH = Path("academic_terms_zh_en.json")
 
+_terms_cache: dict[str, object] = {}
+
 
 @dataclass(frozen=True)
 class RewrittenQuery:
@@ -53,10 +55,19 @@ def rewrite_query(user_query: str, terms_path: Path = TERMS_PATH) -> RewrittenQu
 
 
 def load_academic_terms(path: Path = TERMS_PATH) -> dict[str, list[str]]:
+    global _terms_cache
     if not path.exists():
         return {}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    if _terms_cache.get("path") == str(path) and _terms_cache.get("mtime") == mtime:
+        return _terms_cache["data"]
     data = json.loads(path.read_text(encoding="utf-8"))
-    return {str(key): [str(item) for item in value] for key, value in data.items()}
+    result = {str(key): [str(item) for item in value] for key, value in data.items()}
+    _terms_cache = {"path": str(path), "mtime": mtime, "data": result}
+    return result
 
 
 def concept_aliases(query: str, term_map: dict[str, list[str]]) -> list[str]:

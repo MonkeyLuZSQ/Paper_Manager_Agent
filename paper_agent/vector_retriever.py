@@ -17,6 +17,33 @@ DEFAULT_EMBEDDING_DIR = Path("data/embeddings")
 DEFAULT_EMBEDDING_PATH = DEFAULT_EMBEDDING_DIR / "chunk_embeddings.npy"
 DEFAULT_META_PATH = DEFAULT_EMBEDDING_DIR / "chunk_meta.json"
 
+_embedding_cache: dict[str, object] = {}
+
+
+def _get_cached_embeddings(
+    embeddings_path: Path,
+    meta_path: Path,
+) -> tuple[object, list[dict]] | None:
+    """Return (normalized_embeddings, meta_chunks) from cache if file unchanged."""
+    global _embedding_cache
+    try:
+        emb_mtime = embeddings_path.stat().st_mtime
+        meta_mtime = meta_path.stat().st_mtime
+    except OSError:
+        return None
+    cache_key = f"{embeddings_path}:{emb_mtime}:{meta_path}:{meta_mtime}"
+    if _embedding_cache.get("key") == cache_key:
+        return _embedding_cache["data"]
+    try:
+        import numpy as np
+        embeddings = _l2_normalize(np.load(embeddings_path))
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta_chunks = meta.get("chunks", [])
+        _embedding_cache = {"key": cache_key, "data": (embeddings, meta_chunks)}
+        return _embedding_cache["data"]
+    except Exception:
+        return None
+
 
 def ensure_chunk_embeddings(
     chunks: list[PaperChunk],
@@ -49,6 +76,7 @@ def ensure_chunk_embeddings(
 
     embeddings_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(embeddings_path, np.asarray(vectors, dtype="float32"))
+    _embedding_cache.clear()
     meta_path.write_text(
         json.dumps(
             {
@@ -90,15 +118,19 @@ def retrieve_by_embedding(
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError("Vector retrieval requires numpy.") from exc
 
+    embeddings_data = _get_cached_embeddings(embeddings_path, meta_path)
+    if embeddings_data is None:
+        print("embedding_search_time=0.000s")
+        print("retrieved_chunks=0")
+        return []
+    embeddings, meta_chunks = embeddings_data
+
     rewritten = rewrite_query(query)
     query_texts = _dedupe([rewritten.original_query, rewritten.english_query])
     client = EmbeddingClient(config)
     query_vectors = np.asarray(client.embed_texts(query_texts), dtype="float32")
     query_vectors = _l2_normalize(query_vectors)
 
-    embeddings = _l2_normalize(np.load(embeddings_path))
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta_chunks = meta.get("chunks", [])
     allowed = {chunk.chunk_id: chunk for chunk in (chunks or load_index(DEFAULT_INDEX_PATH))}
     scores = embeddings @ query_vectors.T
     best_scores = scores.max(axis=1)
@@ -120,6 +152,128 @@ def retrieve_by_embedding(
     return _trim_results(results[:top_k])
 
 
+_SECTION_PRIORITY: dict[str, int] = {
+    "abstract": 3,
+    "introduction": 2,
+    "method": 5,
+    "methods": 5,
+    "methodology": 5,
+    "formulation": 5,
+    "model": 5,
+    "algorithm": 5,
+    "approach": 4,
+    "framework": 5,
+    "experiment": 4,
+    "experiments": 4,
+    "experimental": 4,
+    "numerical": 4,
+    "result": 5,
+    "results": 5,
+    "simulation": 4,
+    "evaluation": 4,
+    "analysis": 3,
+    "discussion": 3,
+    "conclusion": 2,
+    "conclusions": 2,
+    "related work": 2,
+    "background": 2,
+    "preliminary": 1,
+    "preliminaries": 1,
+    "implementation": 4,
+    "performance": 4,
+}
+
+_STOP_WORDS: set[str] = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "can", "shall", "to", "of", "in", "for",
+    "on", "with", "at", "by", "from", "as", "into", "through", "during",
+    "before", "after", "above", "below", "between", "under", "again",
+    "further", "then", "once", "here", "there", "when", "where", "why",
+    "how", "all", "each", "every", "both", "few", "more", "most", "other",
+    "some", "such", "no", "not", "only", "own", "same", "so", "than",
+    "too", "very", "just", "because", "but", "and", "or", "if", "while",
+    "about", "what", "which", "this", "that", "these", "those", "it", "its",
+}
+
+
+def _extract_query_terms(query: str) -> list[str]:
+    """Extract meaningful terms from a query for keyword-level scoring."""
+    import re
+    tokens = re.findall(r"[a-zA-Z\u4e00-\u9fff]+(?:[-_][a-zA-Z]+)*", query.lower())
+    return [t for t in tokens if t not in _STOP_WORDS and len(t) > 1]
+
+
+def _section_score(section: str) -> float:
+    """Return a priority score for a paper section (0.0–1.0)."""
+    if not section:
+        return 0.3
+    lower = section.lower().strip()
+    for key, priority in _SECTION_PRIORITY.items():
+        if key in lower:
+            return min(priority / 5.0, 1.0)
+    return 0.3
+
+
+def _keyword_overlap_score(query_terms: list[str], text: str) -> float:
+    """Fraction of query terms that appear in the chunk text."""
+    if not query_terms:
+        return 0.0
+    text_lower = text.lower()
+    hits = sum(1 for term in query_terms if term in text_lower)
+    return hits / len(query_terms)
+
+
+def _exact_match_bonus(query_terms: list[str], text: str) -> float:
+    """Extra bonus for exact multi-word phrase matches."""
+    text_lower = text.lower()
+    bonus = 0.0
+    for i in range(len(query_terms)):
+        for j in range(i + 2, min(i + 5, len(query_terms) + 1)):
+            phrase = " ".join(query_terms[i:j])
+            if phrase in text_lower:
+                bonus += 0.15 * (j - i)
+    return min(bonus, 0.5)
+
+
+def _rerank_candidates(
+    results: list[RetrievedChunk],
+    query: str,
+    top_k: int,
+) -> list[RetrievedChunk]:
+    """Rescore candidates with multiple relevance signals and return top_k."""
+    if not results:
+        return []
+
+    query_terms = _extract_query_terms(query)
+
+    emb_scores = _normalized_scores(results)
+    emb_values = [item.score for item in results]
+    emb_min, emb_max = min(emb_values), max(emb_values)
+    emb_range = emb_max - emb_min if emb_max > emb_min else 1.0
+
+    reranked: list[RetrievedChunk] = []
+    for item in results:
+        chunk = item.chunk
+
+        emb_norm = (item.score - emb_min) / emb_range if emb_range > 0 else 0.5
+        kw_score = _keyword_overlap_score(query_terms, chunk.text)
+        sec_score = _section_score(chunk.section)
+        exact_bonus = _exact_match_bonus(query_terms, chunk.text)
+
+        final_score = (
+            0.40 * emb_norm
+            + 0.25 * kw_score
+            + 0.15 * sec_score
+            + 0.20 * min(exact_bonus / 0.5, 1.0)
+        )
+
+        reranked.append(RetrievedChunk(chunk=chunk, score=final_score))
+
+    reranked.sort(key=lambda item: item.score, reverse=True)
+    return _trim_results(reranked[:top_k])
+
+
 def retrieve(
     query: str,
     chunks: list[PaperChunk],
@@ -129,30 +283,33 @@ def retrieve(
     if mode == "keyword":
         return hybrid_search_chunks(chunks, query=query, top_k=top_k)
 
+    recall_k = max(top_k * 3, 24)
+
     embedding_results: list[RetrievedChunk] = []
     try:
-        embedding_results = retrieve_by_embedding(query, top_k=max(top_k, 8), chunks=chunks)
+        embedding_results = retrieve_by_embedding(query, top_k=recall_k, chunks=chunks)
     except Exception as exc:
         print(f"Embedding retrieval skipped: {exc}")
 
     rewritten = rewrite_query(query)
-    keyword_results = hybrid_search_chunks(chunks, query=query, top_k=max(top_k, 8))
+    keyword_results = hybrid_search_chunks(chunks, query=query, top_k=recall_k)
     for keyword_query in rewritten.keyword_queries:
-        keyword_results.extend(hybrid_search_chunks(chunks, query=keyword_query, top_k=max(top_k, 8)))
+        keyword_results.extend(hybrid_search_chunks(chunks, query=keyword_query, top_k=max(recall_k // 2, 8)))
 
     if mode == "embedding":
-        return embedding_results[:top_k]
+        return _rerank_candidates(embedding_results, query, top_k=top_k)
     if not embedding_results:
-        return keyword_results[:top_k]
+        return _rerank_candidates(keyword_results, query, top_k=top_k)
 
-    return _merge_hybrid(embedding_results, keyword_results, top_k=top_k)
+    merged = _merge_hybrid_raw(embedding_results, keyword_results)
+    return _rerank_candidates(merged, query, top_k=top_k)
 
 
-def _merge_hybrid(
+def _merge_hybrid_raw(
     embedding_results: list[RetrievedChunk],
     keyword_results: list[RetrievedChunk],
-    top_k: int,
 ) -> list[RetrievedChunk]:
+    """Merge embedding and keyword results without trimming, for reranking."""
     embedding_scores = _normalized_scores(embedding_results)
     keyword_scores = _normalized_scores(keyword_results)
     chunks_by_id = {item.chunk.chunk_id: item.chunk for item in [*embedding_results, *keyword_results]}
@@ -161,7 +318,9 @@ def _merge_hybrid(
         score = 0.65 * embedding_scores.get(chunk_id, 0.0) + 0.35 * keyword_scores.get(chunk_id, 0.0)
         merged.append(RetrievedChunk(chunk=chunk, score=score))
     merged.sort(key=lambda item: item.score, reverse=True)
-    return _trim_results(merged[:top_k])
+    return merged
+
+
 
 
 def _normalized_scores(results: list[RetrievedChunk]) -> dict[str, float]:

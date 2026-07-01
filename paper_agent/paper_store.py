@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from paper_agent.document_loader import SUPPORTED_SUFFIXES, load_document
-from paper_agent.text_utils import chunk_text, normalize_text
+from paper_agent.text_utils import chunk_text, chunk_text_section_aware, normalize_text
 
 
 DEFAULT_INDEX_PATH = Path("data/chunks/index.json")
@@ -45,7 +45,7 @@ def build_index(
         raw_text = load_document(paper_path)
         text = normalize_text(raw_text)
         paper_id = _safe_id(paper_path.stem)
-        paper_chunks = chunk_text(text, max_chars=chunk_chars, overlap=overlap)
+        paper_chunks = chunk_text_section_aware(text, max_chars=chunk_chars, overlap=overlap)
         current_page: int | None = None
         for index, chunk in enumerate(paper_chunks, start=1):
             inferred_page = _infer_page(chunk)

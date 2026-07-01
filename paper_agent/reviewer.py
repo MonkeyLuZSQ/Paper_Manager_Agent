@@ -10,6 +10,7 @@ from paper_agent.prompts import (
     REVIEWER_SYSTEM_PROMPT,
     chunk_review_prompt,
     compact_notes_prompt,
+    full_report_prompt,
     paper_card_prompt,
     section_review_prompt,
 )
@@ -186,17 +187,29 @@ def review_paper(
     )
     llm_calls += 1
 
-    print("Writing final review report by sections...")
-    section_outputs: dict[str, str] = {}
-    for section_title in ["摘要", "主要内容", "核心算法", "算例分析"]:
-        print(f"Writing section: {section_title}")
-        section_outputs[section_title] = llm.chat(
+    if summary_mode == "deep":
+        # Deep mode: 4 separate section calls for maximum quality and detail
+        section_outputs: dict[str, str] = {}
+        for section_title in ["摘要", "主要内容", "核心算法", "算例分析"]:
+            print(f"Writing section: {section_title} (deep mode)...")
+            section_outputs[section_title] = llm.chat(
+                REVIEWER_SYSTEM_PROMPT,
+                section_review_prompt(paper_path.stem, section_title, paper_card, notes),
+                max_tokens=min(llm.config.max_tokens, config.final_tokens),
+            )
+            llm_calls += 1
+        report = assemble_markdown_report(section_outputs)
+    else:
+        # Quick/standard: single-call report generation for efficiency
+        print(f"Writing final review report (single-call, {summary_mode})...")
+        full_report = llm.chat(
             REVIEWER_SYSTEM_PROMPT,
-            section_review_prompt(paper_path.stem, section_title, paper_card, notes),
-            max_tokens=min(llm.config.max_tokens, config.final_tokens),
+            full_report_prompt(paper_path.stem, paper_card, notes),
+            max_tokens=min(llm.config.max_tokens, config.final_tokens * 3),
         )
         llm_calls += 1
-    report = assemble_markdown_report(section_outputs)
+        section_outputs = _split_report_sections(full_report)
+        report = assemble_markdown_report(section_outputs)
     return ReviewResult(
         paper_path=paper_path,
         chunks=len(selected_chunks),
@@ -220,6 +233,34 @@ def assemble_markdown_report(section_outputs: dict[str, str]) -> str:
         body = strip_section_heading(section_outputs.get(section, ""), section).strip()
         parts.append(f"# {section}\n\n{body}")
     return "\n\n".join(parts).strip() + "\n"
+
+
+def _split_report_sections(text: str) -> dict[str, str]:
+    """Parse a full report into {section_title: body} by splitting on '# ' headings."""
+    expected = ["摘要", "主要内容", "核心算法", "算例分析"]
+    result: dict[str, str] = {}
+    lines = text.strip().splitlines()
+    current_section: str | None = None
+    current_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip().lstrip("#").strip()
+        matched = None
+        for sec in expected:
+            if stripped == sec:
+                matched = sec
+                break
+        if matched:
+            if current_section:
+                result[current_section] = "\n".join(current_lines).strip()
+            current_section = matched
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_section:
+        result[current_section] = "\n".join(current_lines).strip()
+    for sec in expected:
+        result.setdefault(sec, "")
+    return result
 
 
 def strip_section_heading(text: str, section: str) -> str:

@@ -78,17 +78,37 @@ class EmbeddingClient:
             self._switch_to_hashing("sentence-transformers is not installed")
             return None
 
+        device = self.config.embedding_device
+
         try:
-            self._model = SentenceTransformer(self.config.embedding_model, device=self.config.embedding_device)
+            self._model = SentenceTransformer(self.config.embedding_model, device=device)
         except Exception as primary_exc:
             self.model_name = self.config.embedding_fallback_model
             try:
-                self._model = SentenceTransformer(self.config.embedding_fallback_model, device=self.config.embedding_device)
+                self._model = SentenceTransformer(self.config.embedding_fallback_model, device=device)
             except Exception:
-                if self.config.embedding_backend == "sentence_transformers":
-                    raise primary_exc
-                self._switch_to_hashing(f"sentence-transformers model load failed: {primary_exc}")
-                return None
+                if device != "cpu":
+                    print(f"Embedding device '{device}' failed ({primary_exc}); retrying on CPU.")
+                    device = "cpu"
+                    try:
+                        self.model_name = self.config.embedding_model
+                        self._model = SentenceTransformer(self.config.embedding_model, device="cpu")
+                        return self._model
+                    except Exception:
+                        self.model_name = self.config.embedding_fallback_model
+                        try:
+                            self._model = SentenceTransformer(self.config.embedding_fallback_model, device="cpu")
+                            return self._model
+                        except Exception as cpu_exc:
+                            if self.config.embedding_backend == "sentence_transformers":
+                                raise cpu_exc
+                            self._switch_to_hashing(f"sentence-transformers failed on CPU: {cpu_exc}")
+                            return None
+                else:
+                    if self.config.embedding_backend == "sentence_transformers":
+                        raise primary_exc
+                    self._switch_to_hashing(f"sentence-transformers model load failed: {primary_exc}")
+                    return None
         return self._model
 
     def _use_hashing_backend(self) -> bool:

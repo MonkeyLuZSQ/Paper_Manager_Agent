@@ -13,14 +13,14 @@ CLIENT_SELECTED=0
 MODEL_NAME="${VLLM_MODEL:-qwen3-4b}"
 MODEL_PATH="${VLLM_MODEL_PATH:-/home/zhengsq/.cache/modelscope/hub/models/Qwen/Qwen3-4B-AWQ}"
 MODEL_FALLBACK="${VLLM_MODEL_FALLBACK:-Qwen/Qwen3-4B-AWQ}"
-MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-2048}"
-GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.70}"
+MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-4096}"
+GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
 KV_CACHE_DTYPE="${VLLM_KV_CACHE_DTYPE:-auto}"
 ENABLE_PREFIX_CACHING="${VLLM_ENABLE_PREFIX_CACHING:-1}"
-ENABLE_CHUNKED_PREFILL="${VLLM_ENABLE_CHUNKED_PREFILL:-0}"
+ENABLE_CHUNKED_PREFILL="${VLLM_ENABLE_CHUNKED_PREFILL:-1}"
 MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-}"
-MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-4}"
-ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-1}"
+MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-2}"
+ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-0}"
 KV_CACHE_METRICS="${VLLM_KV_CACHE_METRICS:-0}"
 WAIT_SECONDS="${VLLM_WAIT_SECONDS:-900}"
 RESTART_STALE="${VLLM_RESTART_STALE:-1}"
@@ -212,6 +212,37 @@ wait_for_vllm() {
   done
 }
 
+# --- Activate venv and build index BEFORE vLLM so embedding uses GPU ---
+source .venv/bin/activate
+COMMON_ENV=(
+  no_proxy="127.0.0.1,localhost,${no_proxy:-}" \
+  NO_PROXY="127.0.0.1,localhost,${NO_PROXY:-}" \
+  http_proxy= \
+  https_proxy= \
+  HTTP_PROXY= \
+  HTTPS_PROXY= \
+  ALL_PROXY= \
+  all_proxy= \
+  PYTHONUNBUFFERED=1 \
+  HF_HUB_OFFLINE=1 \
+  TRANSFORMERS_OFFLINE=1
+)
+log "Checking if index rebuild is needed..."
+NEED_REINDEX=1
+if [ -f data/chunks/index.json ] && [ -f data/embeddings/chunk_embeddings.npy ]; then
+  INDEX_MTIME=$(stat -c %Y data/chunks/index.json 2>/dev/null || echo 0)
+  NEWEST_PAPER=$(find paper_rep -maxdepth 1 -type f \( -iname '*.pdf' -o -iname '*.txt' -o -iname '*.md' \) -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
+  NEWEST_PAPER_INT=${NEWEST_PAPER%%.*}
+  if [ "$NEWEST_PAPER_INT" -gt 0 ] && [ "$INDEX_MTIME" -ge "$NEWEST_PAPER_INT" ]; then
+    NEED_REINDEX=0
+    log "Index is up-to-date, skipping rebuild."
+  fi
+fi
+if [ "$NEED_REINDEX" = "1" ]; then
+  log "Building chunk index and computing embeddings (GPU, before vLLM)..."
+  env "${COMMON_ENV[@]}" python -m paper_agent.cli index
+fi
+
 if [ "$FORCE_RESTART" = "1" ]; then
   log "VLLM_FORCE_RESTART=1; restarting vLLM before running agent."
   RESTART_STALE=1
@@ -235,18 +266,6 @@ else
 fi
 
 log "Running paper agent mode: $AGENT_MODE"
-source .venv/bin/activate
-COMMON_ENV=(
-  no_proxy="127.0.0.1,localhost,${no_proxy:-}" \
-  NO_PROXY="127.0.0.1,localhost,${NO_PROXY:-}" \
-  http_proxy= \
-  https_proxy= \
-  HTTP_PROXY= \
-  HTTPS_PROXY= \
-  ALL_PROXY= \
-  all_proxy= \
-  PYTHONUNBUFFERED=1
-)
 
 if [ "$AGENT_MODE" = "review" ]; then
   log "Reviewing paper: $PAPER"
@@ -258,8 +277,6 @@ if [ "$AGENT_MODE" = "review" ]; then
     --max-tokens "$MAX_TOKENS" \
     --summary-mode "${SUMMARY_MODE:-quick}"
 elif [ "$AGENT_MODE" = "web" ]; then
-  log "Building local chunk index before web UI."
-  env "${COMMON_ENV[@]}" python -m paper_agent.cli index
   log "Starting web UI at http://${WEB_HOST:-127.0.0.1}:${WEB_PORT:-7860}"
   env "${COMMON_ENV[@]}" python -m paper_agent.web_app \
     --model "$MODEL_NAME" \
@@ -267,8 +284,6 @@ elif [ "$AGENT_MODE" = "web" ]; then
     --max-tokens "$MAX_TOKENS" \
     --max-input-tokens "${AGENT_MAX_INPUT_TOKENS:-1000}"
 else
-  log "Building local chunk index before chat."
-  env "${COMMON_ENV[@]}" python -m paper_agent.cli index
   env "${COMMON_ENV[@]}" python -m paper_agent.cli chat \
     --model "$MODEL_NAME" \
     --base-url "$BASE_URL" \

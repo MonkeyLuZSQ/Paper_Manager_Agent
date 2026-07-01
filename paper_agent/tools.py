@@ -68,24 +68,6 @@ class ToolBox:
         return format_retrieved_chunks([RetrievedChunk(chunk=chunk, score=1.0) for chunk in selected])
 
 
-def _is_overview_query(query: str) -> bool:
-    lowered = query.lower()
-    keywords = [
-        "summary",
-        "summarize",
-        "overview",
-        "abstract",
-        "introduction",
-        "conclusion",
-        "总结",
-        "概括",
-        "主要",
-        "研究什么",
-        "讲什么",
-        "摘要",
-    ]
-    return any(keyword in lowered for keyword in keywords)
-
 
 def _needs_fallback(query: str) -> bool:
     lowered = query.lower()

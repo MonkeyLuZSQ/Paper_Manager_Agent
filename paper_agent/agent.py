@@ -12,12 +12,6 @@ from paper_agent.reviewer import review_paper, write_report
 from paper_agent.tools import ToolBox
 
 
-def load_agent_instructions(path: Path = Path("agent.md")) -> str:
-    if not path.exists():
-        return ""
-    return path.read_text(encoding="utf-8", errors="ignore").strip()
-
-
 AGENT_SYSTEM_PROMPT = """你的名字叫小智，是 MonkeyLu's Paper Manager Agent 中的专业文献审稿人。
 你的语言风格要幽默风趣、亲切自然，但不能牺牲学术严谨性和证据意识。
 在合适的时候可以称呼用户为“朋友”，尤其是开场、澄清问题或提示下一步时。
@@ -51,7 +45,6 @@ class PaperAgent:
     active_paper_name: str | None = None
     conversation_summary: str = ""
     messages: list[ConversationTurn] = field(default_factory=list)
-    review_instructions: str = field(default_factory=load_agent_instructions)
 
     @classmethod
     def create(
@@ -79,8 +72,6 @@ class PaperAgent:
         summary_context = self._active_summary_context()
         if summary_context:
             observations.append(f"Current paper summary markdown:\n{summary_context}")
-        forced_context = self.tools.search_papers(user_input, top_k=2, paper_name=self.active_paper_name)
-        observations.append(f"Initial retrieval:\n{forced_context}")
 
         for step in range(1, self.max_tool_calls + 1):
             prompt = self._build_react_prompt(user_input, observations, step)
@@ -325,9 +316,25 @@ def _extract_json_like_answer(raw: str) -> str:
 
 
 def _is_summary_request(text: str) -> bool:
-    lowered = text.lower()
-    keywords = ["总结", "审稿", "阅读这篇", "summarize", "review"]
-    return any(keyword in lowered for keyword in keywords)
+    lowered = text.lower().strip()
+    strong_patterns = [
+        r"(?:帮我|请|给)?(?:总结|概括|综述|审稿|阅读).{0,6}(?:这篇|该|这|那)?(?:论文|文献|文章|paper)",
+        r"(?:summarize|review)\s+(?:this|the|paper)",
+        r"(?:深度|详细|完整|全面).{0,4}(?:总结|综述|审稿|review|阅读)",
+        r"(?:完整|full|deep|detailed)\s*review",
+    ]
+    if any(re.search(pat, lowered) for pat in strong_patterns):
+        return True
+    action_keywords = ["总结", "审稿", "summarize"]
+    if any(kw in lowered for kw in action_keywords):
+        if re.search(r"(?:paper_rep|\.pdf|\.txt|\.md)", lowered):
+            return True
+        for kw in action_keywords:
+            idx = lowered.find(kw)
+            before = lowered[max(0, idx - 6):idx]
+            if re.search(r"(?:帮我|请|给|来|做)", before):
+                return True
+    return False
 
 
 def detect_summary_mode(text: str) -> str:
@@ -343,7 +350,6 @@ def detect_summary_mode(text: str) -> str:
         "deep review",
         "full review",
         "detailed summary",
-        "review",
         "详细总结",
     ]
     standard_keywords = ["standard", "标准", "中等", "较详细", "常规综述"]
