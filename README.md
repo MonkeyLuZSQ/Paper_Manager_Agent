@@ -185,6 +185,89 @@ VLLM_FORCE_RESTART=1 VLLM_GPU_MEMORY_UTILIZATION=0.85 ./run_agent_wsl.sh
 VLLM_FORCE_RESTART=1 VLLM_MAX_MODEL_LEN=6144 VLLM_GPU_MEMORY_UTILIZATION=0.85 ./run_agent_wsl.sh
 ```
 
+## 参数详解
+
+以下参数是当前 agent 和启动脚本中最常需要调整的配置。优先通过命令行参数或环境变量调整；embedding 相关参数以 `config.yaml` 为准。`config.json` 目前不参与主流程读取，建议只作为历史配置参考。
+
+### Agent 与 LLM 生成参数
+
+| 参数 | 入口 | 默认值 | 作用 | 调整建议 |
+| --- | --- | --- | --- | --- |
+| `--model` / `VLLM_MODEL` | CLI/Web/脚本 | `qwen3-4b` 或必填 | 指定 vLLM 暴露的模型名。 | 换模型时同时确认 vLLM 的 `--served-model-name` 和 `VLLM_MODEL_PATH`。 |
+| `--base-url` / `VLLM_BASE_URL` | CLI/Web/脚本 | `http://localhost:8000/v1` 或 `http://127.0.0.1:8000/v1` | OpenAI-compatible API 地址。 | WSL/Windows 网络不通时显式指定可访问 IP。 |
+| `--api-key` / `VLLM_API_KEY` | CLI/Web | `EMPTY` | API key，占位或鉴权使用。 | 本地 vLLM 通常保持 `EMPTY`。 |
+| `--temperature` / `AGENT_TEMPERATURE` | CLI/Web | `0.2` | 控制回答随机性。 | 审稿、总结建议 `0.1-0.3`；需要更发散表达可提高到 `0.5`。 |
+| `--max-tokens` / `AGENT_MAX_TOKENS` | CLI/Web/脚本 | chat/web `500`，单篇总结 `2048` | 限制单次 LLM 输出长度。 | 回答被截断时调高；显存或上下文紧张时调低。 |
+| `--max-input-tokens` / `AGENT_MAX_INPUT_TOKENS` | chat/Web | `1000`，agent 默认 `1500` | 控制对话摘要、检索 observation 等进入 prompt 的长度。 | 证据不够可适当调高；上下文超限时调低。 |
+| `recent_turns` | `PaperAgent` 代码参数 | `4` | 保留最近对话轮数，旧消息会压缩为摘要。 | 长链路追问可调大，但会增加 prompt 成本。 |
+| `max_tool_calls` | `PaperAgent` 代码参数 | `3` | 单轮 ReAct 最多工具调用次数。 | 多跳检索问题可调到 `4-5`；追求速度时保持默认。 |
+
+### 索引、Chunk 与检索参数
+
+| 参数 | 入口 | 默认值 | 作用 | 调整建议 |
+| --- | --- | --- | --- | --- |
+| `--paper-dir` | CLI/Web | `paper_rep` | 论文输入目录。 | 多个论文集可使用不同目录。 |
+| `--output-dir` | CLI/Web | `outputs` | 总结 Markdown 输出目录。 | 通常保持默认。 |
+| `--index-path` | CLI/Web | `data/chunks/index.json` | chunk 索引路径。 | 多套索引并行时指定独立路径。 |
+| `--chunk-chars` / `AGENT_INDEX_CHUNK_CHARS` | `index`/Web | `1800` | 构建检索索引时的 chunk 字符上限。 | 检索粒度太粗可降到 `1200-1600`；上下文断裂明显可升到 `2200-3000`。 |
+| `--overlap` / `AGENT_INDEX_OVERLAP` | `index`/Web | `180` | 相邻 chunk 重叠字符数。 | 段落或公式跨 chunk 时调高到 `250-400`；索引过大时调低。 |
+| `AGENT_CHUNK_CHARS` | review 脚本模式 | `3000` | 单篇总结流程的全文切分大小。 | 总结缺少上下文时调高；模型上下文不足时调低。 |
+| `AGENT_OVERLAP` | review 脚本模式 | `300` | 单篇总结流程的 chunk 重叠。 | 通常设为 chunk 大小的 5%-15%。 |
+| `retrieval_backend` | `config.yaml` | `hybrid` | 检索后端配置字段。 | 当前工具层默认使用 hybrid，建议保持不变。 |
+
+### Embedding 参数（`config.yaml`）
+
+| 参数 | 默认值 | 作用 | 调整建议 |
+| --- | --- | --- | --- |
+| `embedding_enabled` | `true` | 是否构建和使用 embedding 索引。 | 只想快速验证关键词检索时可设为 `false`。 |
+| `embedding_backend` | `auto` | embedding 后端，支持 `auto`、`sentence_transformers`、`hashing`。 | 推荐 `auto`；强制 neural embedding 用 `sentence_transformers`；极低资源环境用 `hashing`。 |
+| `embedding_model` | `BAAI/bge-m3` | 主 embedding 模型。 | 中英混合检索建议保留；显存不足可换小模型。 |
+| `embedding_fallback_model` | `paraphrase-multilingual-MiniLM-L12-v2` | 主模型失败后的备用模型。 | 低显存机器可直接把主模型改成该模型。 |
+| `embedding_hashing_model` | `local-hashing-multilingual-v1` | hashing fallback 的元数据名称。 | 通常无需修改。 |
+| `embedding_device` | `cuda` | embedding 计算设备。 | 有 CUDA 用 `cuda`；CPU 环境改为 `cpu`。 |
+| `embedding_batch_size` | `8` | embedding 批大小。 | OOM 时降到 `2-4`；显存充足可升到 `16`。 |
+| `embedding_normalize` | `true` | 是否归一化向量。 | 余弦相似度检索建议保持 `true`。 |
+| `embedding_multilingual` | `true` | 多语言配置标记，主要写入元数据。 | 保持 `true`。 |
+| `embedding_hash_dim` | `768` | hashing embedding 维度。 | hashing 检索效果粗糙时可升到 `1024`，缓存也会变大。 |
+
+修改 embedding 模型、后端或新增论文后，建议重建索引：
+
+```bash
+python -m paper_agent.cli index
+```
+
+### 总结模式参数
+
+| 模式 | 最大 chunk 数 | batch size | note tokens | 压缩轮次 | final tokens | 适用场景 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `quick` | 8 | 3 | 220 | 0 | 550 | 快速概览，默认推荐。 |
+| `standard` | 12 | 2 | 220 | 1 | 650 | 需要更稳覆盖，但仍希望控制耗时。 |
+| `deep` | 30 | 1 | 240 | 多轮 | 750/节 | 深度审稿、复现准备、方法细节分析。 |
+
+`quick/standard` 会用一次最终 LLM 调用生成四段报告；`deep` 会分别生成四个章节，质量更稳但耗时更长。
+
+### vLLM 服务参数
+
+| 参数 | 默认值 | 作用 | 调整建议 |
+| --- | --- | --- | --- |
+| `VLLM_MODEL_PATH` / `MODEL_PATH` | 本地 Qwen3-4B-AWQ 路径 | 模型本地路径。 | 模型移动或更换时必须修改。 |
+| `VLLM_MODEL_FALLBACK` / `MODEL_PATH_FALLBACK` | `Qwen/Qwen3-4B-AWQ` | 本地路径不可用时的 fallback 模型名。 | 离线环境需提前缓存模型。 |
+| `VLLM_BIND_HOST` | `0.0.0.0` | vLLM 监听地址。 | 仅本机访问可设为 `127.0.0.1`。 |
+| `VLLM_CLIENT_HOST` | `127.0.0.1` | agent 访问 vLLM 的主机。 | WSL 网络异常时设为实际可访问 IP。 |
+| `VLLM_PORT` | `8000` | vLLM 服务端口。 | 端口冲突时修改。 |
+| `VLLM_MAX_MODEL_LEN` | `4096` | 模型最大上下文长度。 | 上下文不足可升到 `6144/8192`，但显存占用会上升。 |
+| `VLLM_GPU_MEMORY_UTILIZATION` | `0.80` | vLLM 可使用 GPU 显存比例。 | OOM 时降到 `0.70-0.75`；显存富余可升到 `0.85`。 |
+| `VLLM_KV_CACHE_DTYPE` | `auto` | KV cache 数据类型。 | 通常保持 `auto`。 |
+| `VLLM_MAX_NUM_SEQS` | `2` | 并发序列数。 | 单用户低显存保持 `1-2`；提高并发会增加显存占用。 |
+| `VLLM_MAX_NUM_BATCHED_TOKENS` | 空 | 批处理 token 上限。 | 调吞吐或低显存排障时再设置。 |
+| `VLLM_ENABLE_PREFIX_CACHING` | `1` | 启用 prefix cache。 | 多轮相似 prompt 建议开启。 |
+| `VLLM_ENABLE_CHUNKED_PREFILL` | `1` | 启用 chunked prefill。 | 长 prompt 场景建议开启。 |
+| `VLLM_ENFORCE_EAGER` | `0` | 强制 eager 执行。 | 遇到 CUDA graph 相关问题时设为 `1`。 |
+| `VLLM_KV_CACHE_METRICS` | `0` | 输出 KV cache 指标。 | 性能排查时临时开启。 |
+| `VLLM_FORCE_RESTART` | `0` | 强制重启 vLLM。 | 修改 vLLM 参数后设为 `1`，确保新参数生效。 |
+| `VLLM_WAIT_SECONDS` | `900` | 等待 vLLM 就绪时间。 | 首次加载大模型可调高。 |
+| `VLLM_RESTART_STALE` | `1` | API 不可用时清理疑似僵尸 vLLM 进程。 | 共享机器上谨慎使用。 |
+
 ## 常见问题
 
 **vLLM 参数修改没生效**：脚本复用了旧服务，使用 `VLLM_FORCE_RESTART=1 ./run_agent_wsl.sh` 强制重启。
