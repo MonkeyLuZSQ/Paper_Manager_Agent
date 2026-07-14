@@ -70,6 +70,8 @@ embedding_enabled: true
 embedding_backend: "auto"          # auto = 优先 GPU neural，失败自动降级
 embedding_model: "BAAI/bge-m3"
 embedding_device: "cuda"
+embedding_index_device: "cuda"     # 索引阶段批量 chunk embedding 使用 GPU
+embedding_query_device: "cpu"      # 对话阶段 query embedding 使用 CPU，避免和 vLLM 抢显存
 retrieval_backend: "hybrid"
 ```
 
@@ -224,7 +226,9 @@ VLLM_FORCE_RESTART=1 VLLM_MAX_MODEL_LEN=6144 VLLM_GPU_MEMORY_UTILIZATION=0.85 ./
 | `embedding_model` | `BAAI/bge-m3` | 主 embedding 模型。 | 中英混合检索建议保留；显存不足可换小模型。 |
 | `embedding_fallback_model` | `paraphrase-multilingual-MiniLM-L12-v2` | 主模型失败后的备用模型。 | 低显存机器可直接把主模型改成该模型。 |
 | `embedding_hashing_model` | `local-hashing-multilingual-v1` | hashing fallback 的元数据名称。 | 通常无需修改。 |
-| `embedding_device` | `cuda` | embedding 计算设备。 | 有 CUDA 用 `cuda`；CPU 环境改为 `cpu`。 |
+| `embedding_device` | `cuda` | 默认 embedding 计算设备，作为 index/query 专用设备未设置时的 fallback。 | 保持 `cuda` 可兼容旧配置；低显存环境可改为 `cpu`。 |
+| `embedding_index_device` | `cuda` | 索引阶段批量计算 chunk embedding 的设备。 | 推荐 `cuda`，在 vLLM 启动前批量完成向量化。 |
+| `embedding_query_device` | `cpu` | 对话阶段计算 query embedding 的设备。 | 推荐 `cpu`，避免 vLLM 启动后再加载 embedding 模型到 GPU。 |
 | `embedding_batch_size` | `8` | embedding 批大小。 | OOM 时降到 `2-4`；显存充足可升到 `16`。 |
 | `embedding_normalize` | `true` | 是否归一化向量。 | 余弦相似度检索建议保持 `true`。 |
 | `embedding_multilingual` | `true` | 多语言配置标记，主要写入元数据。 | 保持 `true`。 |

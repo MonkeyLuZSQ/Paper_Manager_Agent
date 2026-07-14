@@ -51,13 +51,15 @@ def ensure_chunk_embeddings(
     meta_path: Path = DEFAULT_META_PATH,
     config: EmbeddingConfig | None = None,
 ) -> bool:
-    config = config or EmbeddingConfig.from_file()
+    base_config = config or EmbeddingConfig.from_file()
+    config = base_config.for_indexing()
     if not config.embedding_enabled:
         print("embedding_enabled=false; embedding index skipped.")
         return False
 
     cached = _cache_matches(chunks, meta_path, config)
     print(f"embedding_model={config.embedding_model}")
+    print(f"embedding_device={config.embedding_device}")
     print(f"indexed_chunk_count={len(chunks)}")
     print(f"embedding_cache_hit={str(cached).lower()}")
     if cached and embeddings_path.exists():
@@ -82,8 +84,12 @@ def ensure_chunk_embeddings(
             {
                 "embedding_model": client.model_name,
                 "embedding_backend": client.backend,
+                "embedding_device": config.embedding_device,
                 "configured_embedding_model": config.embedding_model,
                 "configured_embedding_backend": config.embedding_backend,
+                "configured_embedding_device": base_config.embedding_device,
+                "configured_embedding_index_device": base_config.embedding_index_device,
+                "configured_embedding_query_device": base_config.embedding_query_device,
                 "embedding_multilingual": config.embedding_multilingual,
                 "chunks": [_chunk_meta(chunk) for chunk in chunks],
             },
@@ -104,7 +110,8 @@ def retrieve_by_embedding(
     config: EmbeddingConfig | None = None,
 ) -> list[RetrievedChunk]:
     started = time.perf_counter()
-    config = config or EmbeddingConfig.from_file()
+    base_config = config or EmbeddingConfig.from_file()
+    config = base_config.for_query()
     language = detect_query_language(query)
     print(f"query_language={language}")
 
@@ -128,8 +135,18 @@ def retrieve_by_embedding(
     rewritten = rewrite_query(query)
     query_texts = _dedupe([rewritten.original_query, rewritten.english_query])
     client = EmbeddingClient(config)
+    print(f"query_embedding_device={config.embedding_device}")
     query_vectors = np.asarray(client.embed_texts(query_texts), dtype="float32")
+    print(f"query_embedding_model={client.model_name}")
     query_vectors = _l2_normalize(query_vectors)
+    if embeddings.shape[1] != query_vectors.shape[1]:
+        print(
+            "embedding_dimension_mismatch="
+            f"chunks:{embeddings.shape[1]},query:{query_vectors.shape[1]}"
+        )
+        print("embedding_search_time=0.000s")
+        print("retrieved_chunks=0")
+        return []
 
     allowed = {chunk.chunk_id: chunk for chunk in (chunks or load_index(DEFAULT_INDEX_PATH))}
     scores = embeddings @ query_vectors.T

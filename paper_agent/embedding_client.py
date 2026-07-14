@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,8 @@ class EmbeddingConfig:
     embedding_hashing_model: str = "local-hashing-multilingual-v1"
     embedding_fallback_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
     embedding_device: str = "cpu"
+    embedding_index_device: str = ""
+    embedding_query_device: str = ""
     embedding_batch_size: int = 8
     embedding_normalize: bool = True
     embedding_multilingual: bool = True
@@ -34,11 +36,22 @@ class EmbeddingConfig:
             embedding_hashing_model=str(values.get("embedding_hashing_model") or cls.embedding_hashing_model),
             embedding_fallback_model=str(values.get("embedding_fallback_model") or cls.embedding_fallback_model),
             embedding_device=str(values.get("embedding_device") or cls.embedding_device),
+            embedding_index_device=str(values.get("embedding_index_device") or cls.embedding_index_device),
+            embedding_query_device=str(values.get("embedding_query_device") or cls.embedding_query_device),
             embedding_batch_size=int(values.get("embedding_batch_size") or cls.embedding_batch_size),
             embedding_normalize=_as_bool(values.get("embedding_normalize"), cls.embedding_normalize),
             embedding_multilingual=_as_bool(values.get("embedding_multilingual"), cls.embedding_multilingual),
             embedding_hash_dim=int(values.get("embedding_hash_dim") or cls.embedding_hash_dim),
         )
+
+    def for_indexing(self) -> "EmbeddingConfig":
+        return self.with_device(self.embedding_index_device or self.embedding_device)
+
+    def for_query(self) -> "EmbeddingConfig":
+        return self.with_device(self.embedding_query_device or self.embedding_device)
+
+    def with_device(self, device: str) -> "EmbeddingConfig":
+        return replace(self, embedding_device=device)
 
 
 class EmbeddingClient:
